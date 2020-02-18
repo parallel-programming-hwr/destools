@@ -22,7 +22,7 @@ pub fn map_to_keys(passwords: Vec<String>) -> Vec<PassKey> {
 }
 
 /// Creates a sha256 hashsum from the input data
-pub fn sha_checksum(data: Vec<u8>) -> Vec<u8> {
+pub fn sha_checksum(data: &Vec<u8>) -> Vec<u8> {
     let mut hasher = Sha256::default();
     hasher.input(data);
     let result = hasher.result();

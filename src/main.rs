@@ -6,6 +6,7 @@ use crate::lib::crypt::{encrypt_data, decrypt_data};
 use rpassword;
 use rpassword::{read_password_from_tty};
 use crate::lib::hash::{create_key, map_to_keys, PassKey, sha_checksum};
+use crate::lib::threading::{decrypt_data_threaded};
 
 #[derive(StructOpt, Clone)]
 #[structopt(name = "destools", version = "1.0", author = "Julius R.")]
@@ -92,7 +93,7 @@ fn encrypt(_opts: &Opts, args: &Encrypt) {
     let output = (*args.output).parse().unwrap();
     let data: Vec<u8> = read_file_binary(input);
     if let Some(output_checksum) = (args.clone()).output_checksum {
-        let checksum = sha_checksum(data.clone());
+        let checksum = sha_checksum(&data);
         let checksum_b64 = base64::encode(checksum.as_slice());
         write_file(output_checksum, checksum_b64.as_bytes());
     }
@@ -115,25 +116,32 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
             let bin_content = read_file_binary(input_checksum);
             let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
             let mut pw_table: Vec<PassKey> = vec![];
+            println!("Reading dictionary...");
             let dictionary = read_file(dict);
-            for line in dictionary.lines() {
+            let lines = dictionary.lines();
+            for (i, line) in lines.enumerate() {
+                print!("Parsing Dictionary: {} lines\r", i);
                 let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
                 let pw = parts.first().unwrap().parse().unwrap();
                 let key_str: String = parts[1].parse().unwrap();
                 let key = base64::decode(&key_str).unwrap();
                 pw_table.push((pw, key));
             }
+            println!("Starting multithreaded decryption...");
+            if let Some(decrypted_data) = decrypt_data_threaded(data.clone(), &pw_table, data_checksum) {
+                write_file(output, &decrypted_data);
+            }
+            /*
             for (i, (pw, key)) in pw_table.iter().enumerate() {
                 let result = decrypt_data(&data, key);
-                let result_checksum = sha_checksum(result.clone());
+                let result_checksum = sha_checksum(&result);
                 print!("{} out of {} Passwords tested\r", i+1, pw_table.len());
                 if result_checksum == data_checksum {
                     println!();
                     println!("Password found: {}", pw);
-                    write_file(output, &result);
                     break;
                 }
-            }
+            }*/
         }
     } else {
         let pass = read_password_from_tty(Some("Password: ")).unwrap();
