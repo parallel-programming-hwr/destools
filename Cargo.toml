@@ -1,0 +1,17 @@
+[package]
+name = "destools"
+version = "0.1.0"
+authors = ["trivernis <trivernis@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+structopt = "0.3.9"
+rand = "0.7.3"
+cfb-mode = "0.3.2"
+des = "0.3.0"
+sha = "1.0.3"
+sha2 = "0.8.1"
+rpassword = "4.0.5"
+base64 = "0.11.0"

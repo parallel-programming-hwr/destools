@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+pass*
+data.txt
+data.des
+data.sha256
+dataenc.txt
+pass.txt
+dictionary.csv
+.idea
