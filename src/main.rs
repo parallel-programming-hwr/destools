@@ -131,6 +131,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
                     let pw = parts[0].parse().unwrap();
                     let key_str: String = parts[1].parse().unwrap();
                     let key = base64::decode(&key_str).unwrap();
+
                     (pw, key)
                 })
                 .collect();
@@ -190,7 +191,7 @@ fn read_file_binary(filename: String) -> Vec<u8> {
     let mut fin = File::open(filename).unwrap();
     let mut data: Vec<u8> = vec![];
     fin.read_to_end(&mut data).unwrap();
-    return data;
+    data
 }
 
 /// Reads a file to the end and returns the contents as a string
@@ -198,7 +199,7 @@ fn read_file(filename: String) -> String {
     let mut fin = File::open(filename).unwrap();
     let mut contents = String::new();
     fin.read_to_string(&mut contents).unwrap();
-    return contents;
+    contents
 }
 
 /// writes binary data to a file
