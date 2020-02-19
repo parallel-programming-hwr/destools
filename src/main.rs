@@ -2,7 +2,7 @@ pub mod lib;
 use structopt::StructOpt;
 use std::fs::File;
 use std::io::{Read, Write};
-use crate::lib::crypt::{encrypt_data, decrypt_data};
+use crate::lib::crypt::{encrypt_data, decrypt_data, decrypt_with_dictionary, decrypt_brute_brute_force};
 use rpassword;
 use rpassword::{read_password_from_tty};
 use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
@@ -111,12 +111,12 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
     let input = (*args.input).parse().unwrap();
     let output = (*args.output).parse().unwrap();
     let dictionary = args.dictionary.clone();
-    let data: Vec<u8> = read_file_binary(input);
+    let data = read_file_binary(input);
 
-    if let Some(dict) = dictionary {
-        if let Some(input_checksum) = (args.clone()).input_checksum {
-            let bin_content = read_file_binary(input_checksum);
-            let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
+    if let Some(input_checksum) = (args.clone()).input_checksum {
+        let bin_content = read_file_binary(input_checksum);
+        let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
+        if let Some(dict) = dictionary {
             println!("Reading dictionary...");
             let dictionary = read_file(dict);
             let lines = dictionary.lines().collect::<Vec<&str>>();
@@ -128,23 +128,19 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
                 (pw, key)
             }).collect();
             println!("Starting multithreaded decryption...");
-            let start = Instant::now();
-            let password = pw_table.par_iter().find_first(|(_pw, key): &&PassKey| {
-                let decrypted_data = decrypt_data(&data, key.as_slice());
-                let decr_check = sha_checksum(&decrypted_data);
-                if decr_check == data_checksum {
-                    true
-                } else {
-                    false
-                }
-            });
-            if let Some((pw, key)) = password {
-                println!("Found password in {:.4}s: {}", start.elapsed().as_secs_f32(), pw);
-                let decrypted_data = decrypt_data(&data, key);
-                write_file(output, &decrypted_data);
+            if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
+                write_file(output, &dec_data);
                 println!("Finished!");
             } else {
                 println!("No password found!");
+            }
+        } else {
+            println!("Starting brute force multithreaded decryption...");
+            if let Some(dec_data) = decrypt_brute_brute_force(&data, &data_checksum) {
+                write_file(output, &dec_data);
+                println!("Finished!");
+            } else {
+                println!("No fitting key found. (This should have been impossible)")
             }
         }
     } else {
