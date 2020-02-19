@@ -5,10 +5,10 @@ use std::io::{Read, Write};
 use crate::lib::crypt::{encrypt_data, decrypt_data};
 use rpassword;
 use rpassword::{read_password_from_tty};
-use crate::lib::hash::{create_key, map_to_keys, PassKey, sha_checksum};
-use crate::lib::threading::{decrypt_data_threaded};
+use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
 use rayon::prelude::*;
 use itertools::Itertools;
+use std::time::Instant;
 
 #[derive(StructOpt, Clone)]
 #[structopt(name = "destools", version = "1.0", author = "Julius R.")]
@@ -117,21 +117,34 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         if let Some(input_checksum) = (args.clone()).input_checksum {
             let bin_content = read_file_binary(input_checksum);
             let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
-            let mut pw_table: Vec<PassKey> = vec![];
             println!("Reading dictionary...");
             let dictionary = read_file(dict);
-            let lines = dictionary.lines();
-            for (i, line) in lines.enumerate() {
-                print!("Parsing Dictionary: {} lines\r", i);
+            let lines = dictionary.lines().collect::<Vec<&str>>();
+            let pw_table: Vec<PassKey> = lines.par_iter().map(|line| {
                 let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
                 let pw = parts[0].parse().unwrap();
                 let key_str: String = parts[1].parse().unwrap();
                 let key = base64::decode(&key_str).unwrap();
-                pw_table.push((pw, key));
-            }
+                (pw, key)
+            }).collect();
             println!("Starting multithreaded decryption...");
-            if let Some(decrypted_data) = decrypt_data_threaded(data.clone(), &pw_table, data_checksum) {
+            let start = Instant::now();
+            let password = pw_table.par_iter().find_first(|(_pw, key): &&PassKey| {
+                let decrypted_data = decrypt_data(&data, key.as_slice());
+                let decr_check = sha_checksum(&decrypted_data);
+                if decr_check == data_checksum {
+                    true
+                } else {
+                    false
+                }
+            });
+            if let Some((pw, key)) = password {
+                println!("Found password in {:.4}s: {}", start.elapsed().as_secs_f32(), pw);
+                let decrypted_data = decrypt_data(&data, key);
                 write_file(output, &decrypted_data);
+                println!("Finished!");
+            } else {
+                println!("No password found!");
             }
         }
     } else {
