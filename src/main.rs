@@ -7,6 +7,8 @@ use rpassword;
 use rpassword::{read_password_from_tty};
 use crate::lib::hash::{create_key, map_to_keys, PassKey, sha_checksum};
 use crate::lib::threading::{decrypt_data_threaded};
+use rayon::prelude::*;
+use itertools::Itertools;
 
 #[derive(StructOpt, Clone)]
 #[structopt(name = "destools", version = "1.0", author = "Julius R.")]
@@ -38,7 +40,7 @@ struct Encrypt {
     input: String,
 
     /// The output file
-    #[structopt(short = "o", long = "output", default_value = "output.txt")]
+    #[structopt(short = "o", long = "output", default_value = "output.des")]
     output: String,
 
     /// The file for the checksum.
@@ -49,7 +51,7 @@ struct Encrypt {
 #[derive(StructOpt, Clone)]
 struct Decrypt {
     /// The input file
-    #[structopt(short = "i", long = "input", default_value = "input.txt")]
+    #[structopt(short = "i", long = "input", default_value = "input.des")]
     input: String,
 
     /// The output file
@@ -122,7 +124,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
             for (i, line) in lines.enumerate() {
                 print!("Parsing Dictionary: {} lines\r", i);
                 let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
-                let pw = parts.first().unwrap().parse().unwrap();
+                let pw = parts[0].parse().unwrap();
                 let key_str: String = parts[1].parse().unwrap();
                 let key = base64::decode(&key_str).unwrap();
                 pw_table.push((pw, key));
@@ -131,17 +133,6 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
             if let Some(decrypted_data) = decrypt_data_threaded(data.clone(), &pw_table, data_checksum) {
                 write_file(output, &decrypted_data);
             }
-            /*
-            for (i, (pw, key)) in pw_table.iter().enumerate() {
-                let result = decrypt_data(&data, key);
-                let result_checksum = sha_checksum(&result);
-                print!("{} out of {} Passwords tested\r", i+1, pw_table.len());
-                if result_checksum == data_checksum {
-                    println!();
-                    println!("Password found: {}", pw);
-                    break;
-                }
-            }*/
         }
     } else {
         let pass = read_password_from_tty(Some("Password: ")).unwrap();
@@ -156,21 +147,26 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input  = (*args.input).parse().unwrap();
     let contents = read_file(input);
     let lines = contents.lines().collect::<Vec<&str>>();
-    let passwords = lines.iter().map(| s | -> String {
+    println!("Parsing {} passwords...", lines.len());
+    let pws: Vec<String> = lines.par_iter().map(| s | -> String {
         s.parse().unwrap()
     }).collect();
+    println!("Removing duplicates...");
+    let passwords = pws.iter().unique().collect_vec();
+    println!("Mapping passwords to keys...");
     let dictionary = map_to_keys(passwords);
+    println!("Writing passwords to file...");
     let mut fout = File::create(args.output.clone()).unwrap();
     for entry in dictionary.iter() {
         let key = base64::encode((*entry).1.as_slice());
         let line = format!("{},{}\n", (*entry).0, key);
         fout.write(&line.into_bytes()).unwrap();
     }
+    println!("Finished!");
 }
 
 /// Reads a file to the end and returns the content as byte array
 fn read_file_binary(filename: String) -> Vec<u8> {
-    println!("{}", filename);
     let mut fin = File::open(filename).unwrap();
     let mut data: Vec<u8> = vec![];
     fin.read_to_end(&mut data).unwrap();
@@ -179,7 +175,6 @@ fn read_file_binary(filename: String) -> Vec<u8> {
 
 /// Reads a file to the end and returns the contents as a string
 fn read_file(filename: String) -> String {
-    println!("{}", filename);
     let mut fin = File::open(filename).unwrap();
     let mut contents= String::new();
     fin.read_to_string(&mut contents).unwrap();
@@ -188,7 +183,6 @@ fn read_file(filename: String) -> String {
 
 /// writes binary data to a file
 fn write_file(filename: String, data: &[u8]) {
-    println!("{}", filename);
     let mut fout = File::create(filename).unwrap();
     fout.write(data).unwrap();
 }
