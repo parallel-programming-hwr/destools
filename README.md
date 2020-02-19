@@ -4,7 +4,7 @@ Tools to encrypt and brute force decrypt with des.
 
 ## Usage
 
-```sh
+```
 USAGE:
     destools <SUBCOMMAND>
 
