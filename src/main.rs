@@ -93,6 +93,7 @@ fn encrypt(_opts: &Opts, args: &Encrypt) {
     let input = (*args.input).parse().unwrap();
     let output = (*args.output).parse().unwrap();
     let data: Vec<u8> = read_file_binary(input);
+
     if let Some(output_checksum) = (args.clone()).output_checksum {
         let checksum = sha_checksum(&data);
         let checksum_b64 = base64::encode(checksum.as_slice());
@@ -115,10 +116,12 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
     if let Some(input_checksum) = (args.clone()).input_checksum {
         let bin_content = read_file_binary(input_checksum);
         let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
+
         if let Some(dict) = dictionary {
             println!("Reading dictionary...");
             let dictionary = read_file(dict);
             let lines = dictionary.lines().collect::<Vec<&str>>();
+
             let pw_table: Vec<PassKey> = lines.par_iter().map(|line| {
                 let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
                 let pw = parts[0].parse().unwrap();
@@ -126,6 +129,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
                 let key = base64::decode(&key_str).unwrap();
                 (pw, key)
             }).collect();
+
             println!("Starting multithreaded decryption...");
             if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
                 write_file(output, &dec_data);
@@ -156,6 +160,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let contents = read_file(input);
     let lines = contents.lines().collect::<Vec<&str>>();
     println!("Parsing {} passwords...", lines.len());
+
     let pws: Vec<String> = lines.par_iter().map(| s | -> String {
         s.parse().unwrap()
     }).collect();
@@ -165,6 +170,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let dictionary = map_to_keys(passwords);
     println!("Writing passwords to file...");
     let mut fout = File::create(args.output.clone()).unwrap();
+
     for entry in dictionary.iter() {
         let key = base64::encode((*entry).1.as_slice());
         let line = format!("{},{}\n", (*entry).0, key);

@@ -58,6 +58,7 @@ pub fn decrypt_with_dictionary(data: &[u8], dict: Vec<PassKey>, checksum: &[u8])
     let pass = dict.par_iter().find_first(|(_pw, key)| {
         let decrypted_data = decrypt_data(&data, key);
         let decr_check = sha_checksum(&decrypted_data);
+
         if decr_check == checksum {
             true
         } else {
@@ -78,6 +79,7 @@ pub fn decrypt_brute_brute_force(data: &[u8], checksum: &[u8]) -> Option<Vec<u8>
         let key: &[u8] = &num.to_le_bytes();
         let decrypted_data = decrypt_data(&data, key);
         let decr_check = sha_checksum(&decrypted_data);
+
         if decr_check == checksum {
             true
         } else {
