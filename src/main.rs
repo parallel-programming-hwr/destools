@@ -8,7 +8,6 @@ use rpassword::{read_password_from_tty};
 use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
 use rayon::prelude::*;
 use itertools::Itertools;
-use std::time::Instant;
 
 #[derive(StructOpt, Clone)]
 #[structopt(name = "destools", version = "1.0", author = "Julius R.")]
