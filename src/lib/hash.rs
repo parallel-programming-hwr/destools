@@ -1,5 +1,5 @@
-use sha2::{Sha256, Digest};
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
 
 pub type PassKey = (String, Vec<u8>);
 
@@ -14,10 +14,13 @@ pub fn create_key(pw: String) -> Vec<u8> {
 
 /// Maps a list of passwords to keys and returns a vector of pairs
 pub fn map_to_keys(passwords: Vec<&String>) -> Vec<PassKey> {
-    return passwords.par_iter().map(|pw| {
-        let pw_str = (*pw).clone();
-        (pw_str.clone(), create_key(pw_str))
-    }).collect();
+    return passwords
+        .par_iter()
+        .map(|pw| {
+            let pw_str = (*pw).clone();
+            (pw_str.clone(), create_key(pw_str))
+        })
+        .collect();
 }
 
 /// Creates a sha256 hashsum from the input data

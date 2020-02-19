@@ -1,13 +1,16 @@
 pub mod lib;
-use structopt::StructOpt;
+
+use crate::lib::crypt::{
+    decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
+};
+use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
+use itertools::Itertools;
+use rayon::prelude::*;
+use rpassword;
+use rpassword::read_password_from_tty;
 use std::fs::File;
 use std::io::{Read, Write};
-use crate::lib::crypt::{encrypt_data, decrypt_data, decrypt_with_dictionary, decrypt_brute_brute_force};
-use rpassword;
-use rpassword::{read_password_from_tty};
-use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
-use rayon::prelude::*;
-use itertools::Itertools;
+use structopt::StructOpt;
 
 #[derive(StructOpt, Clone)]
 #[structopt(name = "destools", version = "1.0", author = "Julius R.")]
@@ -18,7 +21,6 @@ struct Opts {
 
 #[derive(StructOpt, Clone)]
 enum SubCommand {
-
     /// Encrypt a file with des
     #[structopt(name = "encrypt")]
     Encrypt(Encrypt),
@@ -29,7 +31,7 @@ enum SubCommand {
 
     /// Create a dictionary rainbow-table from a txt file
     #[structopt(name = "create-dictionary")]
-    CreateDictionary(CreateDictionary)
+    CreateDictionary(CreateDictionary),
 }
 
 #[derive(StructOpt, Clone)]
@@ -65,7 +67,7 @@ struct Decrypt {
     /// The file needs to be in a csv format with calculated password hashes.
     /// The hashes can be calculated with the create-dictionary subcommand from a txt file.
     #[structopt(short = "d", long = "dictionary")]
-    dictionary: Option<String>
+    dictionary: Option<String>,
 }
 
 #[derive(StructOpt, Clone)]
@@ -122,13 +124,16 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
             let dictionary = read_file(dict);
             let lines = dictionary.lines().collect::<Vec<&str>>();
 
-            let pw_table: Vec<PassKey> = lines.par_iter().map(|line| {
-                let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
-                let pw = parts[0].parse().unwrap();
-                let key_str: String = parts[1].parse().unwrap();
-                let key = base64::decode(&key_str).unwrap();
-                (pw, key)
-            }).collect();
+            let pw_table: Vec<PassKey> = lines
+                .par_iter()
+                .map(|line| {
+                    let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
+                    let pw = parts[0].parse().unwrap();
+                    let key_str: String = parts[1].parse().unwrap();
+                    let key = base64::decode(&key_str).unwrap();
+                    (pw, key)
+                })
+                .collect();
 
             println!("Starting multithreaded decryption...");
             if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
@@ -156,14 +161,15 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
-    let input  = (*args.input).parse().unwrap();
+    let input = (*args.input).parse().unwrap();
     let contents = read_file(input);
     let lines = contents.lines().collect::<Vec<&str>>();
     println!("Parsing {} passwords...", lines.len());
 
-    let pws: Vec<String> = lines.par_iter().map(| s | -> String {
-        s.parse().unwrap()
-    }).collect();
+    let pws: Vec<String> = lines
+        .par_iter()
+        .map(|s| -> String { s.parse().unwrap() })
+        .collect();
     println!("Removing duplicates...");
     let passwords = pws.iter().unique().collect_vec();
     println!("Mapping passwords to keys...");
@@ -190,7 +196,7 @@ fn read_file_binary(filename: String) -> Vec<u8> {
 /// Reads a file to the end and returns the contents as a string
 fn read_file(filename: String) -> String {
     let mut fin = File::open(filename).unwrap();
-    let mut contents= String::new();
+    let mut contents = String::new();
     fin.read_to_string(&mut contents).unwrap();
     return contents;
 }

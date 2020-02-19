@@ -1,14 +1,14 @@
-use rand::Rng;
+use crate::lib::hash::{sha_checksum, PassKey};
+use cfb_mode::stream_cipher::{NewStreamCipher, StreamCipher};
 use cfb_mode::Cfb;
 use des::Des;
-use cfb_mode::stream_cipher::{NewStreamCipher, StreamCipher};
+use rand::Rng;
 use rayon::prelude::*;
-use crate::lib::hash::{PassKey, sha_checksum};
 
 type DesCfb = Cfb<Des>;
 
 pub struct EncryptionKeys {
-    current: u64
+    current: u64,
 }
 
 impl Iterator for EncryptionKeys {
@@ -27,9 +27,7 @@ impl Iterator for EncryptionKeys {
 
 impl EncryptionKeys {
     pub fn new() -> Self {
-        Self {
-            current: 0
-        }
+        Self { current: 0 }
     }
 }
 
@@ -54,7 +52,11 @@ pub fn decrypt_data(data: &[u8], key: &[u8]) -> Vec<u8> {
 }
 
 /// Decrypts data using a dictionary
-pub fn decrypt_with_dictionary(data: &[u8], dict: Vec<PassKey>, checksum: &[u8]) -> Option<Vec<u8>> {
+pub fn decrypt_with_dictionary(
+    data: &[u8],
+    dict: Vec<PassKey>,
+    checksum: &[u8],
+) -> Option<Vec<u8>> {
     let pass = dict.par_iter().find_first(|(_pw, key)| {
         let decrypted_data = decrypt_data(&data, key);
         let decr_check = sha_checksum(&decrypted_data);
@@ -75,17 +77,19 @@ pub fn decrypt_with_dictionary(data: &[u8], dict: Vec<PassKey>, checksum: &[u8])
 
 /// Decrypts data by generating all possible keys
 pub fn decrypt_brute_brute_force(data: &[u8], checksum: &[u8]) -> Option<Vec<u8>> {
-    let encryption_key = (0u64..std::u64::MAX).into_par_iter().find_first(|num: &u64| {
-        let key: &[u8] = &num.to_le_bytes();
-        let decrypted_data = decrypt_data(&data, key);
-        let decr_check = sha_checksum(&decrypted_data);
+    let encryption_key = (0u64..std::u64::MAX)
+        .into_par_iter()
+        .find_first(|num: &u64| {
+            let key: &[u8] = &num.to_le_bytes();
+            let decrypted_data = decrypt_data(&data, key);
+            let decr_check = sha_checksum(&decrypted_data);
 
-        if decr_check == checksum {
-            true
-        } else {
-            false
-        }
-    });
+            if decr_check == checksum {
+                true
+            } else {
+                false
+            }
+        });
     if let Some(num) = encryption_key {
         let key: &[u8] = &num.to_le_bytes();
         println!("Key found: {:?}", key);
