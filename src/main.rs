@@ -8,9 +8,9 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use rpassword;
 use rpassword::read_password_from_tty;
+use std::fs;
 use std::fs::File;
-use std::io;
-use std::io::{Read, Write};
+use std::io::Write;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Clone)]
@@ -93,37 +93,37 @@ fn main() {
 
 /// Encrypts a file with des
 fn encrypt(_opts: &Opts, args: &Encrypt) {
-    let input = (*args.input).parse().unwrap();
-    let output = (*args.output).parse().unwrap();
-    let data: Vec<u8> = read_file_binary(input).expect("Failed to read input file!");
+    let input: String = (*args.input).parse().unwrap();
+    let output: String = (*args.output).parse().unwrap();
+    let data: Vec<u8> = fs::read(input).expect("Failed to read input file!");
 
     if let Some(output_checksum) = (args.clone()).output_checksum {
         let checksum = sha_checksum(&data);
         let checksum_b64 = base64::encode(checksum.as_slice());
-        write_file(output_checksum, checksum_b64.as_bytes())
+        fs::write(output_checksum, checksum_b64.as_bytes())
             .expect("Failed to write checksum file!");
     }
     let pass = read_password_from_tty(Some("Password: ")).unwrap();
     let key = create_key(pass);
     let enc_data = encrypt_data(data.as_slice(), key.as_slice());
-    write_file(output, enc_data.as_slice()).expect("Failed to write output file!");
+    fs::write(output, enc_data.as_slice()).expect("Failed to write output file!");
 }
 
 /// Decrypts a des encrypted file.
 /// Brute forces if the dictionary argument was passed
 fn decrypt(_opts: &Opts, args: &Decrypt) {
-    let input = (*args.input).parse().unwrap();
-    let output = (*args.output).parse().unwrap();
+    let input: String = (*args.input).parse().unwrap();
+    let output: String = (*args.output).parse().unwrap();
     let dictionary = args.dictionary.clone();
-    let data = read_file_binary(input).expect("Failed to read input file!");
+    let data = fs::read(input).expect("Failed to read input file!");
 
     if let Some(input_checksum) = (args.clone()).input_checksum {
-        let bin_content = read_file_binary(input_checksum).expect("Failed to read checksum file!");
+        let bin_content = fs::read(input_checksum).expect("Failed to read checksum file!");
         let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
 
         if let Some(dict) = dictionary {
             println!("Reading dictionary...");
-            let dictionary = read_file(dict).expect("Failed to read dictionary file!");
+            let dictionary = fs::read_to_string(dict).expect("Failed to read dictionary file!");
             let lines = dictionary.lines().collect::<Vec<&str>>();
 
             let pw_table: Vec<PassKey> = lines
@@ -140,7 +140,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 
             println!("Starting multithreaded decryption...");
             if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
-                write_file(output, &dec_data).expect("Failed to write output file!");
+                fs::write(output, &dec_data).expect("Failed to write output file!");
                 println!("Finished!");
             } else {
                 println!("No password found!");
@@ -148,7 +148,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         } else {
             println!("Starting brute force multithreaded decryption...");
             if let Some(dec_data) = decrypt_brute_brute_force(&data, &data_checksum) {
-                write_file(output, &dec_data).expect("Failed to write output file!");
+                fs::write(output, &dec_data).expect("Failed to write output file!");
                 println!("Finished!");
             } else {
                 println!("No fitting key found. (This should have been impossible)")
@@ -158,14 +158,14 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         let pass = read_password_from_tty(Some("Password: ")).unwrap();
         let key = create_key(pass);
         let result = decrypt_data(&data, key.as_slice());
-        write_file(output, &result).expect("Failed to write output file!");
+        fs::write(output, &result).expect("Failed to write output file!");
     }
 }
 
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
-    let input = (*args.input).parse().unwrap();
-    let contents = read_file(input).expect("Failed to read input file!");
+    let input: String = (*args.input).parse().unwrap();
+    let contents = fs::read_to_string(input).expect("Failed to read input file!");
     let lines = contents.lines().collect::<Vec<&str>>();
     println!("Parsing {} passwords...", lines.len());
 
@@ -186,24 +186,4 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         fout.write(&line.into_bytes()).unwrap();
     }
     println!("Finished!");
-}
-
-/// Reads a file to the end and returns the content as byte array
-fn read_file_binary(filename: String) -> Result<Vec<u8>, io::Error> {
-    let mut data: Vec<u8> = vec![];
-    File::open(filename)?.read_to_end(&mut data)?;
-    Ok(data)
-}
-
-/// Reads a file to the end and returns the contents as a string
-fn read_file(filename: String) -> Result<String, io::Error> {
-    let mut contents = String::new();
-    File::open(filename)?.read_to_string(&mut contents)?;
-    Ok(contents)
-}
-
-/// writes binary data to a file
-fn write_file(filename: String, data: &[u8]) -> Result<(), io::Error> {
-    File::create(filename)?.write(data)?;
-    Ok(())
 }
