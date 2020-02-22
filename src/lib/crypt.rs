@@ -4,6 +4,7 @@ use cfb_mode::Cfb;
 use des::Des;
 use rand::Rng;
 use rayon::prelude::*;
+use std::sync::Mutex;
 
 type DesCfb = Cfb<Des>;
 
@@ -35,15 +36,24 @@ pub fn decrypt_with_dictionary(
     dict: Vec<PassKey>,
     checksum: &[u8],
 ) -> Option<Vec<u8>> {
+    let decrypted = Mutex::<Option<Vec<u8>>>::new(None);
     let pass = dict.par_iter().find_first(|(_pw, key)| {
         let decrypted_data = decrypt_data(&data, key);
         let decr_check = sha_checksum(&decrypted_data);
-
-        decr_check == checksum
+        return if decr_check == checksum {
+            let mut decry = decrypted.lock().unwrap();
+            *decry = Some(decrypted_data);
+            true
+        } else {
+            false
+        };
     });
-    if let Some((pw, key)) = pass {
+    if let Some((pw, _key)) = pass {
         println!("Password found: {}", pw);
-        return Some(decrypt_data(data, &key));
+        let decry = decrypted.lock().unwrap();
+        if let Some(decrypted_data) = (*decry).clone() {
+            return Some(decrypted_data);
+        }
     }
     None
 }

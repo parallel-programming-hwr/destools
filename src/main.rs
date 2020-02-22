@@ -180,7 +180,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     println!("Writing passwords to file...");
     let mut fout = File::create(args.output.clone()).unwrap();
 
-    for entry in dictionary {
+    for entry in &dictionary {
         let key = base64::encode(entry.1.as_slice());
         let line = format!("{},{}\n", entry.0, key);
         fout.write(&line.into_bytes()).unwrap();
