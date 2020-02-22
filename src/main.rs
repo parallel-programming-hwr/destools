@@ -5,12 +5,15 @@ use crate::lib::crypt::{
 };
 use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
 use itertools::Itertools;
+use pbr::ProgressBar;
 use rayon::prelude::*;
 use rpassword;
 use rpassword::read_password_from_tty;
+use spinners::{Spinner, Spinners};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
+use std::time::Duration;
 use structopt::StructOpt;
 
 #[derive(StructOpt, Clone)]
@@ -122,7 +125,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
 
         if let Some(dict) = dictionary {
-            println!("Reading dictionary...");
+            let sp = spinner("Reading dictionary...");
             let dictionary = fs::read_to_string(dict).expect("Failed to read dictionary file!");
             let lines = dictionary.lines().collect::<Vec<&str>>();
 
@@ -137,21 +140,24 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
                     (pw, key)
                 })
                 .collect();
-
-            println!("Starting multithreaded decryption...");
+            sp.message("Dictionary decrypting file multithreaded".into());
             if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
+                sp.stop();
                 fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!("Finished!");
+                println!("\nFinished!");
             } else {
-                println!("No password found!");
+                sp.stop();
+                println!("\nNo password found!");
             }
         } else {
-            println!("Starting brute force multithreaded decryption...");
+            let sp = spinner("Brute force decrypting file");
             if let Some(dec_data) = decrypt_brute_brute_force(&data, &data_checksum) {
+                sp.stop();
                 fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!("Finished!");
+                println!("\nFinished!");
             } else {
-                println!("No fitting key found. (This should have been impossible)")
+                sp.stop();
+                println!("\nNo fitting key found. (This should have been impossible)")
             }
         }
     } else {
@@ -167,23 +173,38 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
     let contents = fs::read_to_string(input).expect("Failed to read input file!");
     let lines = contents.lines().collect::<Vec<&str>>();
-    println!("Parsing {} passwords...", lines.len());
+    let sp = spinner(format!("Parsing {} passwords...", lines.len()).as_str());
 
     let pws: Vec<String> = lines
         .par_iter()
         .map(|s| -> String { s.parse().unwrap() })
         .collect();
-    println!("Removing duplicates...");
+    sp.message("Removing duplicates".into());
     let passwords = pws.iter().unique().collect_vec();
-    println!("Mapping passwords to keys...");
+    sp.message("Mapping passwords to keys".into());
     let dictionary = map_to_keys(passwords);
-    println!("Writing passwords to file...");
+    sp.message("Encoding data to lines".into());
+    let dict_lines: Vec<String> = dictionary
+        .par_iter()
+        .map(|(pw, key): &PassKey| -> String {
+            let key_base64 = base64::encode(key.as_slice());
+            format!("{},{}\n", pw, key_base64)
+        })
+        .collect();
+    sp.stop();
+    println!("\rWriting passwords to file...");
     let mut fout = File::create(args.output.clone()).unwrap();
-
-    for entry in &dictionary {
-        let key = base64::encode(entry.1.as_slice());
-        let line = format!("{},{}\n", entry.0, key);
+    let mut pb = ProgressBar::new(dict_lines.len() as u64);
+    pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
+    for line in dict_lines {
         fout.write(&line.into_bytes()).unwrap();
+        pb.inc();
     }
+    pb.finish();
     println!("Finished!");
+}
+
+/// Creates a new spinner with a given text
+fn spinner(text: &str) -> Spinner {
+    Spinner::new(Spinners::Dots2, text.into())
 }

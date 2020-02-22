@@ -49,7 +49,7 @@ pub fn decrypt_with_dictionary(
         };
     });
     if let Some((pw, _key)) = pass {
-        println!("Password found: {}", pw);
+        println!("\nPassword found: {}", pw);
         let decry = decrypted.lock().unwrap();
         if let Some(decrypted_data) = (*decry).clone() {
             return Some(decrypted_data);
