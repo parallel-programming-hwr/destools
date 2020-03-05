@@ -171,18 +171,15 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
-    let contents = fs::read_to_string(input).expect("Failed to read input file!");
-    let lines = contents.lines().collect::<Vec<&str>>();
-    let sp = spinner(format!("Parsing {} passwords...", lines.len()).as_str());
-
-    let pws: Vec<String> = lines
-        .par_iter()
-        .map(|s| -> String { s.parse().unwrap() })
-        .collect();
-    sp.message("Removing duplicates".into());
-    let passwords = pws.iter().unique().collect_vec();
-    sp.message("Mapping passwords to keys".into());
-    let dictionary = map_to_keys(passwords);
+    let sp = spinner("Parsing passwords...");
+    let dictionary: Vec<PassKey>;
+    {
+        let pws = get_lines(&input);
+        sp.message("Removing duplicates".into());
+        let passwords = pws.iter().unique().collect_vec();
+        sp.message("Mapping passwords to keys".into());
+        dictionary = map_to_keys(passwords);
+    }
     sp.message("Encoding data to lines".into());
     let dict_lines: Vec<String> = dictionary
         .par_iter()
@@ -202,6 +199,15 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     }
     pb.finish();
     println!("Finished!");
+}
+
+fn get_lines(filename: &str) -> Vec<String> {
+    let contents = fs::read_to_string(filename).expect("Failed to read input file!");
+    let lines = contents.lines().collect::<Vec<&str>>();
+    lines
+        .par_iter()
+        .map(|s| -> String { s.parse().unwrap() })
+        .collect()
 }
 
 /// Creates a new spinner with a given text
