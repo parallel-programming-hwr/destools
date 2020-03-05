@@ -4,7 +4,6 @@ use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
 use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
-use itertools::Itertools;
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rpassword;
@@ -174,9 +173,8 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let sp = spinner("Parsing passwords...");
     let dictionary: Vec<PassKey>;
     {
-        let pws = get_lines(&input);
-        sp.message("Removing duplicates".into());
-        let passwords = pws.iter().unique().collect_vec();
+        let passwords = get_lines(&input);
+        // TODO: Some form of removing duplicates (without itertools)
         sp.message("Mapping passwords to keys".into());
         dictionary = map_to_keys(passwords);
     }

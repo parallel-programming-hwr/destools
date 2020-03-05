@@ -14,7 +14,7 @@ pub fn create_key(pw: String) -> Vec<u8> {
 }
 
 /// Maps a list of passwords to keys and returns a vector of pairs
-pub fn map_to_keys(passwords: Vec<&String>) -> Vec<PassKey> {
+pub fn map_to_keys(passwords: Vec<String>) -> Vec<PassKey> {
     passwords
         .par_iter()
         .map(|pw| {
