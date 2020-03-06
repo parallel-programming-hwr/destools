@@ -6,6 +6,7 @@ use crate::lib::crypt::{
 use crate::lib::hash::{create_key, sha_checksum, PassKey};
 use pbr::ProgressBar;
 use rayon::prelude::*;
+use rayon::str;
 use rpassword;
 use rpassword::read_password_from_tty;
 use spinners::{Spinner, Spinners};
@@ -172,15 +173,17 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
-    let sp = spinner("Parsing passwords...");
-    let contents = fs::read_to_string(input).expect("Failed to read input file!");
-    let passwords = contents.lines().collect::<Vec<&str>>();
+    //let reader = BufReader::new(File::open(input).expect("Failed to open input file."));
     // TODO: Some form of removing duplicates (without itertools)
-    sp.stop();
     let mut fout = File::create(args.output.clone()).unwrap();
     let handle;
     {
-        let mut pb = ProgressBar::new(passwords.len() as u64);
+        let content = fs::read_to_string(input).expect("Failed to read content");
+        let lines = content.par_lines();
+        let mut pb;
+        {
+            pb = ProgressBar::new(lines.clone().count() as u64);
+        }
         pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
         let (rx, tx) = channel::<String>();
         handle = thread::spawn(move || {
@@ -190,8 +193,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
             }
             pb.finish();
         });
-        passwords
-            .par_iter()
+        lines
             .map(|pw| -> String {
                 let key = create_key(pw);
                 let key_base64 = base64::encode(key.as_slice());
