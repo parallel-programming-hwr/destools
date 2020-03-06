@@ -3,7 +3,7 @@ pub mod lib;
 use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
-use crate::lib::hash::{create_key, map_to_keys, sha_checksum, PassKey};
+use crate::lib::hash::{create_key, sha_checksum, PassKey};
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rpassword;
@@ -12,6 +12,8 @@ use spinners::{Spinner, Spinners};
 use std::fs;
 use std::fs::File;
 use std::io::Write;
+use std::sync::mpsc::channel;
+use std::thread;
 use std::time::Duration;
 use structopt::StructOpt;
 
@@ -106,7 +108,7 @@ fn encrypt(_opts: &Opts, args: &Encrypt) {
             .expect("Failed to write checksum file!");
     }
     let pass = read_password_from_tty(Some("Password: ")).unwrap();
-    let key = create_key(pass);
+    let key = create_key(&pass);
     let enc_data = encrypt_data(data.as_slice(), key.as_slice());
     fs::write(output, enc_data.as_slice()).expect("Failed to write output file!");
 }
@@ -161,7 +163,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         }
     } else {
         let pass = read_password_from_tty(Some("Password: ")).unwrap();
-        let key = create_key(pass);
+        let key = create_key(&pass);
         let result = decrypt_data(&data, key.as_slice());
         fs::write(output, &result).expect("Failed to write output file!");
     }
@@ -171,41 +173,38 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
     let sp = spinner("Parsing passwords...");
-    let dictionary: Vec<PassKey>;
-    {
-        let passwords = get_lines(&input);
-        // TODO: Some form of removing duplicates (without itertools)
-        sp.message("Mapping passwords to keys".into());
-        dictionary = map_to_keys(passwords);
-    }
-    sp.message("Encoding data to lines".into());
-    let dict_lines: Vec<String> = dictionary
-        .par_iter()
-        .map(|(pw, key): &PassKey| -> String {
-            let key_base64 = base64::encode(key.as_slice());
-            format!("{},{}\n", pw, key_base64)
-        })
-        .collect();
+    let contents = fs::read_to_string(input).expect("Failed to read input file!");
+    let passwords = contents.lines().collect::<Vec<&str>>();
+    // TODO: Some form of removing duplicates (without itertools)
     sp.stop();
-    println!("\rWriting passwords to file...");
     let mut fout = File::create(args.output.clone()).unwrap();
-    let mut pb = ProgressBar::new(dict_lines.len() as u64);
-    pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-    for line in dict_lines {
-        fout.write(&line.into_bytes()).unwrap();
-        pb.inc();
+    let handle;
+    {
+        let mut pb = ProgressBar::new(passwords.len() as u64);
+        pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
+        let (rx, tx) = channel::<String>();
+        handle = thread::spawn(move || {
+            for line in tx {
+                fout.write(&line.as_bytes()).unwrap();
+                pb.inc();
+            }
+            pb.finish();
+        });
+        passwords
+            .par_iter()
+            .map(|pw| -> String {
+                let key = create_key(pw);
+                let key_base64 = base64::encode(key.as_slice());
+                format!("{},{}\n", pw, key_base64)
+            })
+            .for_each_with(rx, |rx, line| {
+                rx.send(line).expect("Failed to send value to channel.");
+            });
     }
-    pb.finish();
+    if let Err(_err) = handle.join() {
+        println!("Failed to join!");
+    }
     println!("Finished!");
-}
-
-fn get_lines(filename: &str) -> Vec<String> {
-    let contents = fs::read_to_string(filename).expect("Failed to read input file!");
-    let lines = contents.lines().collect::<Vec<&str>>();
-    lines
-        .par_iter()
-        .map(|s| -> String { s.parse().unwrap() })
-        .collect()
 }
 
 /// Creates a new spinner with a given text
