@@ -12,8 +12,8 @@ use rpassword::read_password_from_tty;
 use spinners::{Spinner, Spinners};
 use std::fs;
 use std::fs::File;
-use std::io::Write;
-use std::sync::mpsc::channel;
+use std::io::{BufWriter, Write};
+use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -173,9 +173,9 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
-    //let reader = BufReader::new(File::open(input).expect("Failed to open input file."));
     // TODO: Some form of removing duplicates (without itertools)
-    let mut fout = File::create(args.output.clone()).unwrap();
+    let fout = File::create(args.output.clone()).unwrap();
+    let mut writer = BufWriter::new(fout);
     let handle;
     {
         let content = fs::read_to_string(input).expect("Failed to read content");
@@ -185,13 +185,14 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
             pb = ProgressBar::new(lines.clone().count() as u64);
         }
         pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-        let (rx, tx) = channel::<String>();
+        let (rx, tx) = sync_channel::<String>(10_000_000);
         handle = thread::spawn(move || {
             for line in tx {
-                fout.write(&line.as_bytes()).unwrap();
+                writer.write(&line.as_bytes()).unwrap();
                 pb.inc();
             }
             pb.finish();
+            writer.flush().expect("Failed to flush the file writer.");
         });
         lines
             .map(|pw| -> String {
