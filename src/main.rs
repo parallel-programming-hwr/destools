@@ -79,11 +79,11 @@ struct Decrypt {
 #[derive(StructOpt, Clone)]
 struct CreateDictionary {
     /// The input dictionary file.
-    #[structopt(short = "i", long = "input", default_value = "dictionary.txt")]
+    #[structopt(short = "i", long = "input", default_value = "passwords.txt")]
     input: String,
 
     /// The output dictionary file
-    #[structopt(short = "o", long = "output", default_value = "dictionary.csv")]
+    #[structopt(short = "o", long = "output", default_value = "dictionary.tsv")]
     output: String,
 }
 
@@ -134,7 +134,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
             let pw_table: Vec<PassKey> = lines
                 .par_iter()
                 .map(|line| {
-                    let parts: Vec<&str> = line.split(",").collect::<Vec<&str>>();
+                    let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
                     let pw = parts[0].parse().unwrap();
                     let key_str: String = parts[1].parse().unwrap();
                     let key = base64::decode(&key_str).unwrap();
@@ -196,9 +196,9 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         });
         lines
             .map(|pw| -> String {
-                let key = create_key(pw);
+                let key = create_key(pw.replace("\t", "").as_ref());
                 let key_base64 = base64::encode(key.as_slice());
-                format!("{},{}\n", pw, key_base64)
+                format!("{}\t{}\n", pw, key_base64)
             })
             .for_each_with(rx, |rx, line| {
                 rx.send(line).expect("Failed to send value to channel.");
