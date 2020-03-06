@@ -13,7 +13,7 @@ use spinners::{Spinner, Spinners};
 use std::fs;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -185,7 +185,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
             pb = ProgressBar::new(lines.clone().count() as u64);
         }
         pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-        let (rx, tx) = channel::<String>();
+        let (rx, tx) = sync_channel::<String>(100_000_000);
         handle = thread::spawn(move || {
             for line in tx {
                 writer.write(&line.as_bytes()).unwrap();
