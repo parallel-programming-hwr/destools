@@ -7,6 +7,7 @@ use crate::lib::hash::{create_key, sha_checksum, PassKey};
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
+use regex::Regex;
 use rpassword;
 use rpassword::read_password_from_tty;
 use spinners::{Spinner, Spinners};
@@ -129,10 +130,9 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         if let Some(dict) = dictionary {
             let sp = spinner("Reading dictionary...");
             let dictionary = fs::read_to_string(dict).expect("Failed to read dictionary file!");
-            let lines = dictionary.lines().collect::<Vec<&str>>();
+            let lines = dictionary.par_lines();
 
             let pw_table: Vec<PassKey> = lines
-                .par_iter()
                 .map(|line| {
                     let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
                     let pw = parts[0].parse().unwrap();
@@ -194,7 +194,9 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
             pb.finish();
             writer.flush().expect("Failed to flush the file writer.");
         });
+        let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
         lines
+            .map(|line| -> String { re.replace_all(line, "").to_string() })
             .map(|pw| -> String {
                 let key = create_key(pw.replace("\t", "").as_ref());
                 let key_base64 = base64::encode(key.as_slice());
