@@ -129,19 +129,21 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 
         if let Some(dict) = dictionary {
             let sp = spinner("Reading dictionary...");
-            let dictionary = fs::read_to_string(dict).expect("Failed to read dictionary file!");
-            let lines = dictionary.par_lines();
+            let pw_table: Vec<PassKey>;
+            {
+                let dictionary = fs::read_to_string(dict).expect("Failed to read dictionary file!");
+                let lines = dictionary.par_lines();
+                pw_table = lines
+                    .map(|line| {
+                        let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
+                        let pw = parts[0].to_string();
+                        let key_str: String = parts[1].to_string();
+                        let key = base64::decode(&key_str).unwrap();
 
-            let pw_table: Vec<PassKey> = lines
-                .map(|line| {
-                    let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
-                    let pw = parts[0].parse().unwrap();
-                    let key_str: String = parts[1].parse().unwrap();
-                    let key = base64::decode(&key_str).unwrap();
-
-                    (pw, key)
-                })
-                .collect();
+                        (pw, key)
+                    })
+                    .collect();
+            }
             sp.message("Dictionary decrypting file multithreaded".into());
             if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
                 sp.stop();
