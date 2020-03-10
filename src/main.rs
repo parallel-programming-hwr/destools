@@ -208,8 +208,10 @@ fn decrypt_with_dictionary_file(
     data_checksum: &Vec<u8>,
 ) -> Option<Vec<u8>> {
     let sp = spinner("Reading dictionary...");
-    let f = File::open(filename).expect("Failed to open dictionary file.");
+    let f = File::open(&filename).expect("Failed to open dictionary file.");
     let reader = BufReader::new(f);
+    let mut pb =
+        ProgressBar::new((get_line_count(&filename) as f64 / LINES_PER_CHUNK as f64).ceil() as u64);
     let (rx, tx) = sync_channel::<Vec<String>>(10);
     let handle = thread::spawn(move || {
         let mut line_vec: Vec<String> = vec![];
@@ -226,7 +228,7 @@ fn decrypt_with_dictionary_file(
         if let Err(_) = rx.send(line_vec.clone()) {}
         line_vec.clear();
     });
-    sp.message("Dictionary decrypting file multithreaded".into());
+    sp.stop();
     let mut result_data: Option<Vec<u8>> = None;
     for lines in tx {
         let pw_table: Vec<PassKey> = lines
@@ -240,13 +242,19 @@ fn decrypt_with_dictionary_file(
                 (pw, key)
             })
             .collect();
+        pb.inc();
         if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
             result_data = Some(dec_data);
             break;
         }
     }
     handle.join().expect("Failed to wait for thread.");
-    sp.stop();
-
+    pb.finish();
     result_data
+}
+
+fn get_line_count(fname: &str) -> usize {
+    let f = File::open(fname).expect("Failed to open file to get the line count.");
+    let reader = BufReader::new(f);
+    return reader.lines().count();
 }
