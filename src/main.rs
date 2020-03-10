@@ -213,7 +213,7 @@ fn decrypt_with_dictionary_file(
     let mut pb =
         ProgressBar::new((get_line_count(&filename) as f64 / LINES_PER_CHUNK as f64).ceil() as u64);
     let (rx, tx) = sync_channel::<Vec<String>>(10);
-    let handle = thread::spawn(move || {
+    let _handle = thread::spawn(move || {
         let mut line_vec: Vec<String> = vec![];
         reader.lines().for_each(|line_result| {
             if line_vec.len() > LINES_PER_CHUNK {
@@ -248,7 +248,6 @@ fn decrypt_with_dictionary_file(
             break;
         }
     }
-    handle.join().expect("Failed to wait for thread.");
     pb.finish();
     result_data
 }
