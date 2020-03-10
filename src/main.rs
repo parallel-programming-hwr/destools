@@ -13,7 +13,7 @@ use rpassword::read_password_from_tty;
 use spinners::{Spinner, Spinners};
 use std::fs;
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
@@ -128,27 +128,10 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
         let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
 
         if let Some(dict) = dictionary {
-            let sp = spinner("Reading dictionary...");
-            let dictionary = fs::read_to_string(dict).expect("Failed to read dictionary file!");
-            let lines = dictionary.par_lines();
-
-            let pw_table: Vec<PassKey> = lines
-                .map(|line| {
-                    let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
-                    let pw = parts[0].parse().unwrap();
-                    let key_str: String = parts[1].parse().unwrap();
-                    let key = base64::decode(&key_str).unwrap();
-
-                    (pw, key)
-                })
-                .collect();
-            sp.message("Dictionary decrypting file multithreaded".into());
-            if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
-                sp.stop();
+            if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data, &data_checksum) {
                 fs::write(output, &dec_data).expect("Failed to write output file!");
                 println!("\nFinished!");
             } else {
-                sp.stop();
                 println!("\nNo password found!");
             }
         } else {
@@ -215,4 +198,55 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
 /// Creates a new spinner with a given text
 fn spinner(text: &str) -> Spinner {
     Spinner::new(Spinners::Dots2, text.into())
+}
+
+const LINES_PER_CHUNK: usize = 100000;
+
+fn decrypt_with_dictionary_file(
+    filename: String,
+    data: &Vec<u8>,
+    data_checksum: &Vec<u8>,
+) -> Option<Vec<u8>> {
+    let sp = spinner("Reading dictionary...");
+    let f = File::open(filename).expect("Failed to open dictionary file.");
+    let reader = BufReader::new(f);
+    let (rx, tx) = sync_channel::<Vec<String>>(10);
+    let handle = thread::spawn(move || {
+        let mut line_vec: Vec<String> = vec![];
+        reader.lines().for_each(|line_result| {
+            if line_vec.len() > LINES_PER_CHUNK {
+                if let Err(_) = rx.send(line_vec.clone()) {}
+                line_vec.clear();
+            }
+            match line_result {
+                Ok(line) => line_vec.push(line),
+                Err(err) => eprintln!("Failed with err {}", err),
+            }
+        });
+        if let Err(_) = rx.send(line_vec.clone()) {}
+        line_vec.clear();
+    });
+    sp.message("Dictionary decrypting file multithreaded".into());
+    let mut result_data: Option<Vec<u8>> = None;
+    for lines in tx {
+        let pw_table: Vec<PassKey> = lines
+            .par_iter()
+            .map(|line| {
+                let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
+                let pw = parts[0].parse().unwrap();
+                let key_str: String = parts[1].parse().unwrap();
+                let key = base64::decode(&key_str).unwrap();
+
+                (pw, key)
+            })
+            .collect();
+        if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
+            result_data = Some(dec_data);
+            break;
+        }
+    }
+    handle.join().expect("Failed to wait for thread.");
+    sp.stop();
+
+    result_data
 }
