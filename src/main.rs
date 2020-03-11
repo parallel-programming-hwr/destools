@@ -200,7 +200,7 @@ fn spinner(text: &str) -> Spinner {
     Spinner::new(Spinners::Dots2, text.into())
 }
 
-const LINES_PER_CHUNK: usize = 100000;
+const LINES_PER_CHUNK: usize = 10000000;
 
 fn decrypt_with_dictionary_file(
     filename: String,
