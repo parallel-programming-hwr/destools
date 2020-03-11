@@ -5,7 +5,6 @@ use des::Des;
 use rand::Rng;
 use rayon::prelude::*;
 use std::sync::Mutex;
-use std::time::Instant;
 
 type DesCfb = Cfb<Des>;
 
@@ -38,7 +37,6 @@ pub fn decrypt_with_dictionary(
     checksum: &[u8],
 ) -> Option<Vec<u8>> {
     let decrypted = Mutex::<Option<Vec<u8>>>::new(None);
-    let start = Instant::now();
     let pass = dict.par_iter().find_first(|(_pw, key)| {
         let decrypted_data = decrypt_data(&data, key);
         let decr_check = sha_checksum(&decrypted_data);
@@ -51,11 +49,7 @@ pub fn decrypt_with_dictionary(
         };
     });
     if let Some((pw, _key)) = pass {
-        println!(
-            "\nPassword found in {:.2}s: {}",
-            start.elapsed().as_secs_f32(),
-            pw
-        );
+        println!("\nPassword found: {}", pw);
         let decry = decrypted.lock().unwrap();
         if let Some(decrypted_data) = (*decry).clone() {
             return Some(decrypted_data);
