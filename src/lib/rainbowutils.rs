@@ -1,5 +1,6 @@
 use byteorder::{BigEndian, ByteOrder};
 use crc::crc32;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs::File;
@@ -61,6 +62,7 @@ impl BinaryDictionaryFile {
         }
     }
 
+    /// Verifies the header of the file and reads and stores the metadata
     pub fn read_metadata(&mut self) -> Result<&MetaChunk, Error> {
         if !self.validate_header() {
             return Err(Error::new(ErrorKind::InvalidData, "invalid BDF Header"));
@@ -78,6 +80,8 @@ impl BinaryDictionaryFile {
         }
     }
 
+    /// Reads the lookup table of the file.
+    /// This function should be called after the read_metadata function was called
     pub fn read_lookup_table(&mut self) -> Result<&HashLookupTable, Error> {
         match &self.metadata {
             None => self.read_metadata()?,
@@ -127,6 +131,21 @@ impl BinaryDictionaryFile {
 }
 
 impl GenericChunk {
+    pub fn serialize(&mut self) -> Vec<u8> {
+        let mut serialized: Vec<u8> = Vec::new();
+        let mut length_raw = [0u8; 4];
+        BigEndian::write_u32(&mut length_raw, self.length);
+        serialized.append(&mut length_raw.to_vec());
+        let name_raw = self.name.as_bytes();
+        serialized.append(&mut name_raw.to_vec());
+        serialized.append(&mut self.data);
+        let mut crc_raw = [0u8; 4];
+        BigEndian::write_u32(&mut crc_raw, self.crc);
+        serialized.append(&mut crc_raw.to_vec());
+
+        serialized
+    }
+
     /// Returns the data entries of the chunk
     pub fn data_entries(
         &mut self,
@@ -151,7 +170,7 @@ impl GenericChunk {
                 let entry_id_raw = &self.data[position..position + 4];
                 position += 4;
                 let entry_id = BigEndian::read_u32(entry_id_raw);
-                if let Some(hash_entry) = lookup_table.get_entry(entry_id) {
+                if let Some(hash_entry) = lookup_table.entries.get(&entry_id) {
                     let hash = &self.data[position..position + hash_entry.output_length as usize];
                     position += hash_entry.output_length as usize;
                     hash_values.insert(hash_entry.name.clone(), hash.to_vec());
@@ -165,12 +184,36 @@ impl GenericChunk {
 
         Ok(entries)
     }
+
+    /// Constructs the chunk from a Vec of Data entries and a hash lookup table
+    pub fn from_data_entries(
+        entries: Vec<DataEntry>,
+        lookup_table: HashLookupTable,
+    ) -> GenericChunk {
+        let mut serialized_data: Vec<u8> = Vec::new();
+        let serialized_entries: Vec<Vec<u8>> = entries
+            .par_iter()
+            .map(|entry: &DataEntry| entry.serialize(lookup_table.clone()))
+            .collect();
+        serialized_entries.iter().for_each(|entry| {
+            serialized_data.append(&mut entry.clone());
+        });
+        let crc_sum = crc32::checksum_ieee(serialized_data.as_slice());
+
+        GenericChunk {
+            length: serialized_data.len() as u32,
+            name: DTBL_CHUNK_NAME.to_string(),
+            data: serialized_data,
+            crc: crc_sum,
+        }
+    }
 }
 
 impl From<MetaChunk> for GenericChunk {
     fn from(chunk: MetaChunk) -> GenericChunk {
         let serialized_data = chunk.serialize();
         let crc_sum = crc32::checksum_ieee(serialized_data.as_slice());
+
         GenericChunk {
             length: serialized_data.len() as u32,
             name: META_CHUNK_NAME.to_string(),
@@ -184,6 +227,7 @@ impl From<HashLookupTable> for GenericChunk {
     fn from(chunk: HashLookupTable) -> GenericChunk {
         let serialized_data = chunk.serialize();
         let crc_sum = crc32::checksum_ieee(serialized_data.as_slice());
+
         GenericChunk {
             length: serialized_data.len() as u32,
             name: HTBL_CHUNK_NAME.to_string(),
@@ -255,8 +299,8 @@ impl TryFrom<GenericChunk> for MetaChunk {
 }
 
 impl HashLookupTable {
-    pub fn get_entry(&self, id: u32) -> Option<&HashEntry> {
-        self.entries.get(&id)
+    pub fn get_entry(&self, name: &String) -> Option<(&u32, &HashEntry)> {
+        self.entries.iter().find(|(_, entry)| entry.name == *name)
     }
 
     /// Serializes the lookup table into a vector of bytes
@@ -326,5 +370,35 @@ impl HashEntry {
         serialized.append(&mut name_raw);
 
         serialized
+    }
+}
+
+impl DataEntry {
+    pub fn serialize(&self, lookup_table: HashLookupTable) -> Vec<u8> {
+        let mut pw_plain_raw = self.plain.clone().into_bytes();
+        let mut pw_length_raw = [0u8; 4];
+        BigEndian::write_u32(&mut pw_length_raw, pw_plain_raw.len() as u32);
+        let mut hash_data: Vec<u8> = Vec::new();
+        for (name, value) in &self.hashes {
+            if let Some((id, _)) = lookup_table.get_entry(&name) {
+                let mut id_raw = [0u8; 4];
+                BigEndian::write_u32(&mut id_raw, *id);
+                hash_data.append(&mut id_raw.to_vec());
+                hash_data.append(&mut value.clone())
+            }
+        }
+
+        let mut length_total_raw = [0u8; 4];
+        BigEndian::write_u32(
+            &mut length_total_raw,
+            4 + pw_plain_raw.len() as u32 + hash_data.len() as u32,
+        );
+        let mut serialized_data: Vec<u8> = Vec::new();
+        serialized_data.append(&mut length_total_raw.to_vec());
+        serialized_data.append(&mut pw_length_raw.to_vec());
+        serialized_data.append(&mut pw_plain_raw);
+        serialized_data.append(&mut hash_data);
+
+        serialized_data
     }
 }
