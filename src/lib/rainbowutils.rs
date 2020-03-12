@@ -12,7 +12,6 @@ pub const HTBL_CHUNK_NAME: &str = "HTBL";
 pub const DTBL_CHUNK_NAME: &str = "DTBL";
 
 pub struct BinaryDictionaryFile {
-    name: String,
     reader: BufReader<File>,
     metadata: Option<MetaChunk>,
     lookup_table: Option<HashLookupTable>,
@@ -55,7 +54,6 @@ pub struct DataEntry {
 impl BinaryDictionaryFile {
     pub fn new(reader: BufReader<File>) -> Self {
         Self {
-            name: "".to_string(),
             metadata: None,
             lookup_table: None,
             reader,
@@ -164,6 +162,33 @@ impl GenericChunk {
         }
 
         Ok(entries)
+    }
+}
+
+impl From<MetaChunk> for GenericChunk {
+    fn from(chunk: MetaChunk) -> GenericChunk {
+        let mut serialized_data: Vec<u8> = Vec::new();
+        let mut chunk_count_raw = [0u8; 4];
+        BigEndian::write_u32(&mut chunk_count_raw, chunk.chunk_count);
+        serialized_data.append(&mut chunk_count_raw.to_vec());
+        let mut entries_pc_raw = [0u8; 4];
+        BigEndian::write_u32(&mut entries_pc_raw, chunk.entries_per_chunk);
+        serialized_data.append(&mut entries_pc_raw.to_vec());
+        let mut total_entries_raw = [0u8; 4];
+        BigEndian::write_u32(&mut total_entries_raw, chunk.entry_count);
+        serialized_data.append(&mut total_entries_raw.to_vec());
+        if let Some(method) = chunk.compression_method {
+            serialized_data.append(&mut method.into_bytes());
+        } else {
+            serialized_data.append(&mut vec![0, 0, 0, 0]);
+        }
+
+        GenericChunk {
+            length: serialized_data.len() as u32,
+            name: META_CHUNK_NAME.to_string(),
+            data: serialized_data,
+            crc: 0,
+        }
     }
 }
 
