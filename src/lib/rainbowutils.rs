@@ -4,8 +4,10 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, BufWriter, Read};
 use std::io::{Error, ErrorKind};
+
+pub const LZMA: &str = "lzma";
 
 pub const BDF_HDR: &[u8; 11] = b"BDF\x01RAINBOW";
 pub const NULL_BYTES: &[u8; 4] = &[0u8; 4];
@@ -13,10 +15,16 @@ pub const META_CHUNK_NAME: &str = "META";
 pub const HTBL_CHUNK_NAME: &str = "HTBL";
 pub const DTBL_CHUNK_NAME: &str = "DTBL";
 
-pub struct BinaryDictionaryFile {
+pub struct BDFReader {
     reader: BufReader<File>,
     metadata: Option<MetaChunk>,
     lookup_table: Option<HashLookupTable>,
+}
+
+pub struct BDFWriter {
+    writer: BufWriter<File>,
+    metadata: MetaChunk,
+    lookup_table: HashLookupTable,
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +61,17 @@ pub struct DataEntry {
     hashes: HashMap<String, Vec<u8>>,
 }
 
-impl BinaryDictionaryFile {
+impl BDFWriter {
+    pub fn new(writer: BufWriter<File>, compress: bool) -> Self {
+        Self {
+            metadata: MetaChunk::new(0, 0, compress),
+            lookup_table: HashLookupTable::new(HashMap::new()),
+            writer,
+        }
+    }
+}
+
+impl BDFReader {
     pub fn new(reader: BufReader<File>) -> Self {
         Self {
             metadata: None,
@@ -100,6 +118,7 @@ impl BinaryDictionaryFile {
         }
     }
 
+    /// Validates the header of the file
     fn validate_header(&mut self) -> bool {
         let mut header = [0u8; 11];
         let _ = self.reader.read(&mut header);
@@ -131,6 +150,7 @@ impl BinaryDictionaryFile {
 }
 
 impl GenericChunk {
+    /// Serializes the chunk to a vector of bytes
     pub fn serialize(&mut self) -> Vec<u8> {
         let mut serialized: Vec<u8> = Vec::new();
         let mut length_raw = [0u8; 4];
@@ -238,6 +258,24 @@ impl From<HashLookupTable> for GenericChunk {
 }
 
 impl MetaChunk {
+    /// Creates a new meta chunk
+    pub fn new(entry_count: u32, entries_per_chunk: u32, compress: bool) -> Self {
+        let compression_method = if compress {
+            Some(LZMA.to_string())
+        } else {
+            None
+        };
+        let chunk_count = (entry_count as f32 / entries_per_chunk as f32).ceil() as u32;
+
+        Self {
+            chunk_count,
+            entry_count,
+            entries_per_chunk,
+            compression_method,
+        }
+    }
+
+    /// Serializes the chunk into bytes
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized_data: Vec<u8> = Vec::new();
         let mut chunk_count_raw = [0u8; 4];
@@ -299,6 +337,11 @@ impl TryFrom<GenericChunk> for MetaChunk {
 }
 
 impl HashLookupTable {
+    pub fn new(entries: HashMap<u32, HashEntry>) -> Self {
+        Self { entries }
+    }
+
+    /// Returns an entry by the name of the hash function
     pub fn get_entry(&self, name: &String) -> Option<(&u32, &HashEntry)> {
         self.entries.iter().find(|(_, entry)| entry.name == *name)
     }
