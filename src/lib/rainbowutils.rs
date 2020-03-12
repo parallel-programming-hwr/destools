@@ -35,7 +35,7 @@ pub struct MetaChunk {
 
 #[derive(Debug, Clone)]
 pub struct HashLookupTable {
-    entries: HashMap<u32, HashEntry>,
+    pub entries: HashMap<u32, HashEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +126,7 @@ impl BinaryDictionaryFile {
 }
 
 impl GenericChunk {
+    /// Returns the data entries of the chunk
     pub fn data_entries(
         &mut self,
         lookup_table: &HashLookupTable,
@@ -273,5 +274,24 @@ impl TryFrom<GenericChunk> for HashLookupTable {
         Ok(HashLookupTable {
             entries: hash_entries,
         })
+    }
+}
+
+impl HashEntry {
+    pub fn serialize(&mut self) -> Vec<u8> {
+        let mut serialized: Vec<u8> = Vec::new();
+        let mut id_raw = [0u8; 4];
+        BigEndian::write_u32(&mut id_raw, self.id);
+        serialized.append(&mut id_raw.to_vec());
+        let mut output_length_raw = [0u8; 4];
+        BigEndian::write_u32(&mut output_length_raw, self.output_length);
+        serialized.append(&mut output_length_raw.to_vec());
+        let mut name_raw = self.name.clone().into_bytes();
+        let mut name_length_raw = [0u8; 4];
+        BigEndian::write_u32(&mut name_length_raw, name_raw.len() as u32);
+        serialized.append(&mut name_length_raw.to_vec());
+        serialized.append(&mut name_raw);
+
+        serialized
     }
 }
