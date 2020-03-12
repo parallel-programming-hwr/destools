@@ -197,7 +197,7 @@ impl TryFrom<GenericChunk> for MetaChunk {
     type Error = Error;
 
     fn try_from(chunk: GenericChunk) -> Result<MetaChunk, Error> {
-        if &chunk.name != HTBL_CHUNK_NAME {
+        if &chunk.name != META_CHUNK_NAME {
             return Err(Error::new(
                 ErrorKind::InvalidData,
                 "chunk name doesn't match",
