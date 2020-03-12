@@ -127,6 +127,46 @@ impl BinaryDictionaryFile {
     }
 }
 
+impl GenericChunk {
+    pub fn data_entries(
+        &mut self,
+        lookup_table: &HashLookupTable,
+    ) -> Result<Vec<DataEntry>, Error> {
+        let mut entries: Vec<DataEntry> = Vec::new();
+        let mut position = 0;
+        while self.data.len() > position {
+            let entry_length_raw = &self.data[position..position + 4];
+            position += 4;
+            let entry_length = BigEndian::read_u32(entry_length_raw);
+            let entry_end = position + entry_length as usize;
+            let pw_length_raw = &self.data[position..position + 4];
+            position += 4;
+            let pw_length = BigEndian::read_u32(pw_length_raw);
+            let pw_plain_raw = &self.data[position..position + pw_length as usize];
+            position += pw_length as usize;
+            let pw_plain = String::from_utf8(pw_plain_raw.to_vec())
+                .expect("failed to parse plain password string");
+            let mut hash_values: HashMap<String, Vec<u8>> = HashMap::new();
+            while position < entry_end {
+                let entry_id_raw = &self.data[position..position + 4];
+                position += 4;
+                let entry_id = BigEndian::read_u32(entry_id_raw);
+                if let Some(hash_entry) = lookup_table.get_entry(entry_id) {
+                    let hash = &self.data[position..position + hash_entry.output_length as usize];
+                    position += hash_entry.output_length as usize;
+                    hash_values.insert(hash_entry.name.clone(), hash.to_vec());
+                }
+            }
+            entries.push(DataEntry {
+                plain: pw_plain,
+                hashes: hash_values,
+            })
+        }
+
+        Ok(entries)
+    }
+}
+
 impl TryFrom<GenericChunk> for MetaChunk {
     type Error = Error;
 
