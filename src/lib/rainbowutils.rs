@@ -6,6 +6,7 @@ use std::convert::{TryFrom, TryInto};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::io::{Error, ErrorKind};
+use xz2::read::{XzDecoder, XzEncoder};
 
 pub const LZMA: &str = "lzma";
 
@@ -18,8 +19,9 @@ pub const ENTRIES_PER_CHUNK: u32 = 100_000;
 
 pub struct BDFReader {
     reader: BufReader<File>,
-    metadata: Option<MetaChunk>,
-    lookup_table: Option<HashLookupTable>,
+    pub metadata: Option<MetaChunk>,
+    pub lookup_table: Option<HashLookupTable>,
+    compressed: bool,
 }
 
 pub struct BDFWriter {
@@ -28,6 +30,7 @@ pub struct BDFWriter {
     lookup_table: HashLookupTable,
     data_entries: Vec<DataEntry>,
     head_written: bool,
+    compressed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -40,10 +43,10 @@ pub struct GenericChunk {
 
 #[derive(Debug, Clone)]
 pub struct MetaChunk {
-    chunk_count: u32,
+    pub chunk_count: u32,
     entries_per_chunk: u32,
-    entry_count: u64,
-    compression_method: Option<String>,
+    pub entry_count: u64,
+    pub compression_method: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,18 +63,19 @@ pub struct HashEntry {
 
 #[derive(Debug, Clone)]
 pub struct DataEntry {
-    plain: String,
+    pub plain: String,
     hashes: HashMap<String, Vec<u8>>,
 }
 
 impl BDFWriter {
     pub fn new(writer: BufWriter<File>, entry_count: u64, compress: bool) -> Self {
         Self {
-            metadata: MetaChunk::new(entry_count, 0, compress),
+            metadata: MetaChunk::new(entry_count, ENTRIES_PER_CHUNK, compress),
             lookup_table: HashLookupTable::new(HashMap::new()),
             data_entries: Vec::new(),
             writer,
             head_written: false,
+            compressed: compress,
         }
     }
 
@@ -115,6 +119,9 @@ impl BDFWriter {
         }
         let mut data_chunk =
             GenericChunk::from_data_entries(&self.data_entries, &self.lookup_table);
+        if self.compressed {
+            data_chunk.compress()?;
+        }
         let data = data_chunk.serialize();
         self.writer.write(data.as_slice())?;
         self.data_entries = Vec::new();
@@ -133,6 +140,7 @@ impl BDFReader {
             metadata: None,
             lookup_table: None,
             reader,
+            compressed: false,
         }
     }
 
@@ -142,6 +150,16 @@ impl BDFReader {
             return Err(Error::new(ErrorKind::InvalidData, "invalid BDF Header"));
         }
         let meta_chunk: MetaChunk = self.next_chunk()?.try_into()?;
+        if let Some(method) = &meta_chunk.compression_method {
+            if *method == LZMA.to_string() {
+                self.compressed = true;
+            } else {
+                return Err(Error::new(
+                    ErrorKind::Other,
+                    "unsupported compression method",
+                ));
+            }
+        }
         self.metadata = Some(meta_chunk);
 
         if let Some(chunk) = &self.metadata {
@@ -195,13 +213,17 @@ impl BDFReader {
         let mut crc_raw = [0u8; 4];
         let _ = self.reader.read_exact(&mut crc_raw)?;
         let crc = BigEndian::read_u32(&mut crc_raw);
-
-        Ok(GenericChunk {
+        let mut gen_chunk = GenericChunk {
             length,
             name,
             data,
             crc,
-        })
+        };
+        if gen_chunk.name == DTBL_CHUNK_NAME.to_string() && self.compressed {
+            gen_chunk.decompress()?;
+        }
+
+        Ok(gen_chunk)
     }
 }
 
@@ -227,9 +249,12 @@ impl GenericChunk {
         &mut self,
         lookup_table: &HashLookupTable,
     ) -> Result<Vec<DataEntry>, Error> {
+        if self.name == HTBL_CHUNK_NAME.to_string() {
+            return Err(Error::new(ErrorKind::Other, "this is not a data chunk"));
+        }
         let mut entries: Vec<DataEntry> = Vec::new();
         let mut position = 0;
-        while self.data.len() > position {
+        while self.data.len() > (position + 8) {
             let entry_length_raw = &self.data[position..position + 4];
             position += 4;
             let entry_length = BigEndian::read_u32(entry_length_raw);
@@ -240,7 +265,15 @@ impl GenericChunk {
             let pw_plain_raw = &self.data[position..position + pw_length as usize];
             position += pw_length as usize;
             let pw_plain = String::from_utf8(pw_plain_raw.to_vec())
-                .expect("failed to parse plain password string");
+                .map_err(|err| {
+                    format!(
+                        "failed to parse plain password string ({}-{}): {:?}",
+                        position,
+                        position + pw_length as usize,
+                        err
+                    )
+                })
+                .unwrap();
             let mut hash_values: HashMap<String, Vec<u8>> = HashMap::new();
             while position < entry_end {
                 let entry_id_raw = &self.data[position..position + 4];
@@ -283,6 +316,35 @@ impl GenericChunk {
             crc: crc_sum,
         }
     }
+
+    pub fn compress(&mut self) -> Result<(), Error> {
+        let data = self.data.as_slice();
+        let mut compressor = XzEncoder::new(data, 6);
+        let mut compressed: Vec<u8> = Vec::new();
+        compressor.read_to_end(&mut compressed)?;
+        self.length = compressed.len() as u32;
+        self.data = compressed;
+
+        Ok(())
+    }
+
+    pub fn decompress(&mut self) -> Result<(), Error> {
+        let data = self.data.as_slice();
+        let mut decompressor = XzDecoder::new(data);
+        let mut decompressed: Vec<u8> = Vec::new();
+        decompressor.read_to_end(&mut decompressed)?;
+        let crc = crc32::checksum_ieee(decompressed.as_slice());
+        if crc != self.crc {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "the crc doesn't match the decrypted data",
+            ));
+        }
+        self.length = decompressed.len() as u32;
+        self.data = decompressed;
+
+        Ok(())
+    }
 }
 
 impl From<&MetaChunk> for GenericChunk {
@@ -321,7 +383,7 @@ impl MetaChunk {
         } else {
             None
         };
-        let chunk_count = (entry_count as f32 / entries_per_chunk as f32).ceil() as u32;
+        let chunk_count = (entry_count as f64 / entries_per_chunk as f64).ceil() as u32;
 
         Self {
             chunk_count,
@@ -492,6 +554,11 @@ impl DataEntry {
     /// Adds a hash to the hash values
     pub fn add_hash_value(&mut self, name: String, value: Vec<u8>) {
         self.hashes.insert(name, value);
+    }
+
+    /// Returns the hash value for a given name of a hash function
+    pub fn get_hash_value(&self, name: String) -> Option<&Vec<u8>> {
+        self.hashes.get(&name)
     }
 
     /// Serializes the entry to a vector of bytes

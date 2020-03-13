@@ -1,4 +1,4 @@
-use crate::lib::hash::{sha_checksum, PassKey};
+use crate::lib::hash::sha_checksum;
 use cfb_mode::stream_cipher::{NewStreamCipher, StreamCipher};
 use cfb_mode::Cfb;
 use des::Des;
@@ -33,7 +33,7 @@ pub fn decrypt_data(data: &[u8], key: &[u8]) -> Vec<u8> {
 /// Decrypts data using a dictionary
 pub fn decrypt_with_dictionary(
     data: &[u8],
-    dict: Vec<PassKey>,
+    dict: Vec<(&String, Vec<u8>)>,
     checksum: &[u8],
 ) -> Option<Vec<u8>> {
     let decrypted = Mutex::<Option<Vec<u8>>>::new(None);

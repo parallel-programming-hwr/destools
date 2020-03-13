@@ -3,8 +3,8 @@ pub mod lib;
 use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
-use crate::lib::hash::{create_key, sha_checksum, PassKey};
-use crate::lib::rainbowutils::{BDFWriter, DataEntry, HashEntry};
+use crate::lib::hash::{create_key, sha256, sha_checksum};
+use crate::lib::rainbowutils::{BDFReader, BDFWriter, DataEntry, HashEntry, HashLookupTable};
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
@@ -12,9 +12,10 @@ use regex::Regex;
 use rpassword;
 use rpassword::read_password_from_tty;
 use spinners::{Spinner, Spinners};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter};
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
@@ -85,8 +86,12 @@ struct CreateDictionary {
     input: String,
 
     /// The output dictionary file
-    #[structopt(short = "o", long = "output", default_value = "dictionary.tsv")]
+    #[structopt(short = "o", long = "output", default_value = "dictionary.bdf")]
     output: String,
+
+    /// If the dictionary file should be compressed
+    #[structopt(short = "c", long = "compress")]
+    compress: bool,
 }
 
 fn main() {
@@ -160,7 +165,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
     // TODO: Some form of removing duplicates (without itertools)
     let fout = File::create(args.output.clone()).unwrap();
-    let mut writer = BufWriter::new(fout);
+    let writer = BufWriter::new(fout);
     let handle;
     {
         let content = fs::read_to_string(input).expect("Failed to read content");
@@ -169,24 +174,28 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         let mut pb = ProgressBar::new(entry_count);
         pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
         let (rx, tx) = sync_channel::<DataEntry>(100_000_000);
-        let mut bdf_file = BDFWriter::new(writer, entry_count, false);
-        bdf_file.add_lookup_entry(HashEntry::new(SHA256.to_string(), 32));
+        let mut bdf_file = BDFWriter::new(writer, entry_count, args.compress);
+        bdf_file
+            .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
+            .expect("Failed to add lookup entry");
         handle = thread::spawn(move || {
             for entry in tx {
-                bdf_file.add_data_entry(entry);
+                if let Err(e) = bdf_file.add_data_entry(entry) {
+                    println!("{:?}", e);
+                }
                 pb.inc();
             }
             pb.finish();
-            bdf_file.flush();
+            bdf_file.flush().expect("failed to flush the file data");
             bdf_file
                 .flush_writer()
-                .expect("Failed to flush the file writer.");
+                .expect("failed to flush the file writer");
         });
         let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
         lines
             .map(|line| -> String { re.replace_all(line, "").to_string() })
             .map(|pw| -> DataEntry {
-                let key = create_key(pw.replace("\t", "").as_ref());
+                let key = sha256(&pw);
                 let mut data_entry = DataEntry::new(pw);
                 data_entry.add_hash_value(SHA256.to_string(), key);
 
@@ -208,8 +217,6 @@ fn spinner(text: &str) -> Spinner {
     Spinner::new(Spinners::Dots2, text.into())
 }
 
-const LINES_PER_CHUNK: usize = 10000000;
-
 fn decrypt_with_dictionary_file(
     filename: String,
     data: &Vec<u8>,
@@ -218,36 +225,37 @@ fn decrypt_with_dictionary_file(
     let sp = spinner("Reading dictionary...");
     let f = File::open(&filename).expect("Failed to open dictionary file.");
     let reader = BufReader::new(f);
-    let mut pb =
-        ProgressBar::new((get_line_count(&filename) as f64 / LINES_PER_CHUNK as f64).ceil() as u64);
-    let (rx, tx) = sync_channel::<Vec<String>>(10);
+    let mut bdf_file = BDFReader::new(reader);
+    bdf_file
+        .read_metadata()
+        .expect("failed to read the metadata of the file");
+    let mut chunk_count = 0;
+    if let Some(meta) = &bdf_file.metadata {
+        chunk_count = meta.chunk_count;
+    }
+    let mut pb = ProgressBar::new(chunk_count as u64);
+    let (rx, tx) = sync_channel::<Vec<DataEntry>>(10);
     let _handle = thread::spawn(move || {
-        let mut line_vec: Vec<String> = vec![];
-        reader.lines().for_each(|line_result| {
-            if line_vec.len() > LINES_PER_CHUNK {
-                if let Err(_) = rx.send(line_vec.clone()) {}
-                line_vec.clear();
+        let mut lookup_table = HashLookupTable::new(HashMap::new());
+        if let Ok(table) = bdf_file.read_lookup_table() {
+            lookup_table = table.clone();
+        }
+        while let Ok(next_chunk) = &mut bdf_file.next_chunk() {
+            if let Ok(entries) = next_chunk.data_entries(&lookup_table) {
+                if let Err(_) = rx.send(entries) {}
             }
-            match line_result {
-                Ok(line) => line_vec.push(line),
-                Err(err) => eprintln!("Failed with err {}", err),
-            }
-        });
-        if let Err(_) = rx.send(line_vec.clone()) {}
-        line_vec.clear();
+        }
     });
     sp.stop();
     let mut result_data: Option<Vec<u8>> = None;
-    for lines in tx {
-        let pw_table: Vec<PassKey> = lines
+    for entries in tx {
+        let pw_table: Vec<(&String, Vec<u8>)> = entries
             .par_iter()
-            .map(|line| {
-                let parts: Vec<&str> = line.split("\t").collect::<Vec<&str>>();
-                let pw = parts[0].parse().unwrap();
-                let key_str: String = parts[1].parse().unwrap();
-                let key = base64::decode(&key_str).unwrap();
+            .map(|entry: &DataEntry| {
+                let pw = &entry.plain;
+                let key: &Vec<u8> = entry.get_hash_value(SHA256.to_string()).unwrap();
 
-                (pw, key)
+                (pw, key[0..8].to_vec())
             })
             .collect();
         pb.inc();
@@ -258,10 +266,4 @@ fn decrypt_with_dictionary_file(
     }
     pb.finish();
     result_data
-}
-
-fn get_line_count(fname: &str) -> usize {
-    let f = File::open(fname).expect("Failed to open file to get the line count.");
-    let reader = BufReader::new(f);
-    return reader.lines().count();
 }
