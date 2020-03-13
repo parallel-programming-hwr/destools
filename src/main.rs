@@ -4,7 +4,8 @@ use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
 use crate::lib::hash::{create_key, sha256, sha_checksum};
-use crate::lib::rainbowutils::{BDFReader, BDFWriter, DataEntry, HashEntry, HashLookupTable};
+use bdf::chunks::{DataEntry, HashEntry, HashLookupTable};
+use bdf::io::{BDFReader, BDFWriter};
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
