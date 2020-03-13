@@ -1,6 +1,5 @@
 use byteorder::{BigEndian, ByteOrder};
 use crc::crc32;
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs::File;
@@ -300,12 +299,8 @@ impl GenericChunk {
         lookup_table: &HashLookupTable,
     ) -> GenericChunk {
         let mut serialized_data: Vec<u8> = Vec::new();
-        let serialized_entries: Vec<Vec<u8>> = entries
-            .par_iter()
-            .map(|entry: &DataEntry| entry.serialize(lookup_table.clone()))
-            .collect();
-        serialized_entries.iter().for_each(|entry| {
-            serialized_data.append(&mut entry.clone());
+        entries.iter().for_each(|entry| {
+            serialized_data.append(&mut entry.serialize(&lookup_table));
         });
         let crc_sum = crc32::checksum_ieee(serialized_data.as_slice());
 
@@ -562,7 +557,7 @@ impl DataEntry {
     }
 
     /// Serializes the entry to a vector of bytes
-    pub fn serialize(&self, lookup_table: HashLookupTable) -> Vec<u8> {
+    pub fn serialize(&self, lookup_table: &HashLookupTable) -> Vec<u8> {
         let mut pw_plain_raw = self.plain.clone().into_bytes();
         let mut pw_length_raw = [0u8; 4];
         BigEndian::write_u32(&mut pw_length_raw, pw_plain_raw.len() as u32);

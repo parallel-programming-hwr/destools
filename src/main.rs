@@ -162,6 +162,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 const SHA256: &str = "sha256";
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
+    let sp = spinner("Reading input file...");
     let input: String = (*args.input).parse().unwrap();
     // TODO: Some form of removing duplicates (without itertools)
     let fout = File::create(args.output.clone()).unwrap();
@@ -171,9 +172,10 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         let content = fs::read_to_string(input).expect("Failed to read content");
         let lines = content.par_lines();
         let entry_count = lines.clone().count() as u64;
+        sp.stop();
         let mut pb = ProgressBar::new(entry_count);
         pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-        let (rx, tx) = sync_channel::<DataEntry>(100_000_000);
+        let (rx, tx) = sync_channel::<DataEntry>(100_000);
         let mut bdf_file = BDFWriter::new(writer, entry_count, args.compress);
         bdf_file
             .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
