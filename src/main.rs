@@ -4,6 +4,7 @@ use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
 use crate::lib::hash::{create_key, sha256, sha_checksum};
+use crate::lib::timing::TimeTaker;
 use bdf::chunks::{DataEntry, HashEntry, HashLookupTable};
 use bdf::io::{BDFReader, BDFWriter};
 use pbr::ProgressBar;
@@ -90,9 +91,14 @@ struct CreateDictionary {
     #[structopt(short = "o", long = "output", default_value = "dictionary.bdf")]
     output: String,
 
-    /// If the dictionary file should be compressed
-    #[structopt(short = "c", long = "compress")]
-    compress: bool,
+    /// The compression level of the dictionary file from 1 to 9
+    /// 0 means no compression
+    #[structopt(short = "c", long = "compression-level", default_value = "0")]
+    compress: u32,
+
+    /// The number of password entries per chunk.
+    #[structopt(long = "entries-per-chunk", default_value = "100000")]
+    entries_per_chunk: u32,
 }
 
 fn main() {
@@ -125,28 +131,41 @@ fn encrypt(_opts: &Opts, args: &Encrypt) {
 /// Decrypts a des encrypted file.
 /// Brute forces if the dictionary argument was passed
 fn decrypt(_opts: &Opts, args: &Decrypt) {
+    let mut tt = TimeTaker::new();
+    tt.take("start");
     let input: String = (*args.input).parse().unwrap();
     let output: String = (*args.output).parse().unwrap();
     let dictionary = args.dictionary.clone();
     let data = fs::read(input).expect("Failed to read input file!");
 
     if let Some(input_checksum) = (args.clone()).input_checksum {
+        tt.take("read-start");
         let bin_content = fs::read(input_checksum).expect("Failed to read checksum file!");
         let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
 
+        println!(
+            "Reading took {:.2}s",
+            tt.since("read-start").unwrap().as_secs_f32()
+        );
         if let Some(dict) = dictionary {
+            tt.take("decryption-start");
             if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data, &data_checksum) {
                 fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!("\nFinished!");
+                println!(
+                    "Decryption took {:.2}s",
+                    tt.since("decryption-start").unwrap().as_secs_f32()
+                );
+                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
             } else {
                 println!("\nNo password found!");
+                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
             }
         } else {
             let sp = spinner("Brute force decrypting file");
             if let Some(dec_data) = decrypt_brute_brute_force(&data, &data_checksum) {
                 sp.stop();
                 fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!("\nFinished!");
+                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
             } else {
                 sp.stop();
                 println!("\nNo fitting key found. (This should have been impossible)")
@@ -161,58 +180,74 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
 }
 
 const SHA256: &str = "sha256";
+
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
+    let mut tt = TimeTaker::new();
+    tt.take("start");
     let sp = spinner("Reading input file...");
     let input: String = (*args.input).parse().unwrap();
     // TODO: Some form of removing duplicates (without itertools)
     let fout = File::create(args.output.clone()).unwrap();
     let writer = BufWriter::new(fout);
     let handle;
-    {
-        let content = fs::read_to_string(input).expect("Failed to read content");
-        let lines = content.par_lines();
-        let entry_count = lines.clone().count() as u64;
-        sp.stop();
-        let mut pb = ProgressBar::new(entry_count);
-        pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-        let (rx, tx) = sync_channel::<DataEntry>(100_000);
-        let mut bdf_file = BDFWriter::new(writer, entry_count, args.compress);
-        bdf_file
-            .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
-            .expect("Failed to add lookup entry");
-        handle = thread::spawn(move || {
-            for entry in tx {
-                if let Err(e) = bdf_file.add_data_entry(entry) {
-                    println!("{:?}", e);
-                }
-                pb.inc();
-            }
-            pb.finish();
-            bdf_file.flush().expect("failed to flush the file data");
-            bdf_file
-                .flush_writer()
-                .expect("failed to flush the file writer");
-        });
-        let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
-        lines
-            .map(|line| -> String { re.replace_all(line, "").to_string() })
-            .map(|pw| -> DataEntry {
-                let key = sha256(&pw);
-                let mut data_entry = DataEntry::new(pw);
-                data_entry.add_hash_value(SHA256.to_string(), key);
 
-                data_entry
-            })
-            .for_each_with(rx, |rx, data_entry| {
-                rx.send(data_entry)
-                    .expect("Failed to send value to channel.");
-            });
-    }
+    let content = fs::read_to_string(input).expect("Failed to read content");
+    let lines = content.par_lines();
+    let entry_count = lines.clone().count() as u64;
+    sp.stop();
+
+    let mut pb = ProgressBar::new(entry_count);
+    pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
+    let (rx, tx) = sync_channel::<DataEntry>(100_00_000);
+
+    let mut bdf_file = BDFWriter::new(writer, entry_count, args.compress != 0);
+    bdf_file.set_compression_level(args.compress);
+    bdf_file
+        .set_entries_per_chunk(args.entries_per_chunk)
+        .expect("Failed to set the entries per chunk.");
+    bdf_file
+        .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
+        .expect("Failed to add sha256 lookup entry");
+
+    handle = thread::spawn(move || {
+        for entry in tx {
+            if let Err(e) = bdf_file.add_data_entry(entry) {
+                println!("{:?}", e);
+            }
+            pb.inc();
+        }
+        pb.finish();
+        bdf_file.flush().expect("failed to flush the file data");
+        bdf_file
+            .flush_writer()
+            .expect("failed to flush the file writer");
+    });
+
+    tt.take("creation");
+    let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
+    lines
+        .map(|line| -> String { re.replace_all(line, "").to_string() })
+        .map(|pw| -> DataEntry {
+            let key256 = sha256(&pw);
+            let mut data_entry = DataEntry::new(pw);
+            data_entry.add_hash_value(SHA256.to_string(), key256);
+
+            data_entry
+        })
+        .for_each_with(rx, |rx, data_entry| {
+            rx.send(data_entry)
+                .expect("Failed to send value to channel.");
+        });
+
     if let Err(_err) = handle.join() {
         println!("Failed to join!");
     }
-    println!("Finished!");
+    println!(
+        "Rainbow table creation took {:.2}s",
+        tt.since("creation").unwrap().as_secs_f32()
+    );
+    println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
 }
 
 /// Creates a new spinner with a given text
