@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::io::{Error, ErrorKind};
 
 pub const LZMA: &str = "lzma";
@@ -14,6 +14,7 @@ pub const NULL_BYTES: &[u8; 4] = &[0u8; 4];
 pub const META_CHUNK_NAME: &str = "META";
 pub const HTBL_CHUNK_NAME: &str = "HTBL";
 pub const DTBL_CHUNK_NAME: &str = "DTBL";
+pub const ENTRIES_PER_CHUNK: u32 = 100_000;
 
 pub struct BDFReader {
     reader: BufReader<File>,
@@ -25,6 +26,8 @@ pub struct BDFWriter {
     writer: BufWriter<File>,
     metadata: MetaChunk,
     lookup_table: HashLookupTable,
+    data_entries: Vec<DataEntry>,
+    head_written: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +42,7 @@ pub struct GenericChunk {
 pub struct MetaChunk {
     chunk_count: u32,
     entries_per_chunk: u32,
-    entry_count: u32,
+    entry_count: u64,
     compression_method: Option<String>,
 }
 
@@ -62,12 +65,65 @@ pub struct DataEntry {
 }
 
 impl BDFWriter {
-    pub fn new(writer: BufWriter<File>, compress: bool) -> Self {
+    pub fn new(writer: BufWriter<File>, entry_count: u64, compress: bool) -> Self {
         Self {
-            metadata: MetaChunk::new(0, 0, compress),
+            metadata: MetaChunk::new(entry_count, 0, compress),
             lookup_table: HashLookupTable::new(HashMap::new()),
+            data_entries: Vec::new(),
             writer,
+            head_written: false,
         }
+    }
+
+    /// Adds an entry to the hash lookup table
+    /// If the lookup table has already been written to the file, an error ris returned
+    pub fn add_lookup_entry(&mut self, mut entry: HashEntry) -> Result<u32, Error> {
+        if self.head_written {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "the head has already been written",
+            ));
+        }
+        let id = self.lookup_table.entries.len() as u32;
+        entry.id = id;
+        self.lookup_table.entries.insert(id, entry);
+
+        Ok(id)
+    }
+
+    /// Adds a data entry to the file.
+    /// If the number of entries per chunk is reached,
+    /// the data will be written to the file
+    pub fn add_data_entry(&mut self, data_entry: DataEntry) -> Result<(), Error> {
+        self.data_entries.push(data_entry);
+        if self.data_entries.len() >= ENTRIES_PER_CHUNK as usize {
+            self.flush()?;
+        }
+
+        Ok(())
+    }
+
+    /// Writes the data to the file
+    pub fn flush(&mut self) -> Result<(), Error> {
+        if !self.head_written {
+            self.writer.write(BDF_HDR)?;
+            let mut generic_meta = GenericChunk::from(&self.metadata);
+            self.writer.write(generic_meta.serialize().as_slice())?;
+            let mut generic_lookup = GenericChunk::from(&self.lookup_table);
+            self.writer.write(generic_lookup.serialize().as_slice())?;
+            self.head_written = true;
+        }
+        let mut data_chunk =
+            GenericChunk::from_data_entries(&self.data_entries, &self.lookup_table);
+        let data = data_chunk.serialize();
+        self.writer.write(data.as_slice())?;
+        self.data_entries = Vec::new();
+
+        Ok(())
+    }
+
+    pub fn flush_writer(&mut self) -> Result<(), Error> {
+        self.writer.flush()
     }
 }
 
@@ -207,8 +263,8 @@ impl GenericChunk {
 
     /// Constructs the chunk from a Vec of Data entries and a hash lookup table
     pub fn from_data_entries(
-        entries: Vec<DataEntry>,
-        lookup_table: HashLookupTable,
+        entries: &Vec<DataEntry>,
+        lookup_table: &HashLookupTable,
     ) -> GenericChunk {
         let mut serialized_data: Vec<u8> = Vec::new();
         let serialized_entries: Vec<Vec<u8>> = entries
@@ -229,8 +285,8 @@ impl GenericChunk {
     }
 }
 
-impl From<MetaChunk> for GenericChunk {
-    fn from(chunk: MetaChunk) -> GenericChunk {
+impl From<&MetaChunk> for GenericChunk {
+    fn from(chunk: &MetaChunk) -> GenericChunk {
         let serialized_data = chunk.serialize();
         let crc_sum = crc32::checksum_ieee(serialized_data.as_slice());
 
@@ -243,8 +299,8 @@ impl From<MetaChunk> for GenericChunk {
     }
 }
 
-impl From<HashLookupTable> for GenericChunk {
-    fn from(chunk: HashLookupTable) -> GenericChunk {
+impl From<&HashLookupTable> for GenericChunk {
+    fn from(chunk: &HashLookupTable) -> GenericChunk {
         let serialized_data = chunk.serialize();
         let crc_sum = crc32::checksum_ieee(serialized_data.as_slice());
 
@@ -259,7 +315,7 @@ impl From<HashLookupTable> for GenericChunk {
 
 impl MetaChunk {
     /// Creates a new meta chunk
-    pub fn new(entry_count: u32, entries_per_chunk: u32, compress: bool) -> Self {
+    pub fn new(entry_count: u64, entries_per_chunk: u32, compress: bool) -> Self {
         let compression_method = if compress {
             Some(LZMA.to_string())
         } else {
@@ -284,8 +340,8 @@ impl MetaChunk {
         let mut entries_pc_raw = [0u8; 4];
         BigEndian::write_u32(&mut entries_pc_raw, self.entries_per_chunk);
         serialized_data.append(&mut entries_pc_raw.to_vec());
-        let mut total_entries_raw = [0u8; 4];
-        BigEndian::write_u32(&mut total_entries_raw, self.entry_count);
+        let mut total_entries_raw = [0u8; 8];
+        BigEndian::write_u64(&mut total_entries_raw, self.entry_count);
         serialized_data.append(&mut total_entries_raw.to_vec());
         let mut compression_method = self.compression_method.clone();
         if let Some(method) = &mut compression_method {
@@ -308,16 +364,16 @@ impl TryFrom<GenericChunk> for MetaChunk {
                 "chunk name doesn't match",
             ));
         }
-        if chunk.data.len() < 16 {
+        if chunk.data.len() < 20 {
             return Err(Error::new(ErrorKind::InvalidData, "invalid chunk data"));
         }
         let chunk_count_raw = &chunk.data[0..4];
         let entries_per_chunk = &chunk.data[4..8];
-        let total_number_of_entries = &chunk.data[8..12];
-        let compression_method_raw = chunk.data[12..16].to_vec();
+        let total_number_of_entries = &chunk.data[8..16];
+        let compression_method_raw = chunk.data[16..20].to_vec();
         let chunk_count = BigEndian::read_u32(chunk_count_raw);
         let entries_per_chunk = BigEndian::read_u32(entries_per_chunk);
-        let entry_count = BigEndian::read_u32(total_number_of_entries);
+        let entry_count = BigEndian::read_u64(total_number_of_entries);
         let compression_method = if &compression_method_raw != NULL_BYTES {
             Some(
                 String::from_utf8(compression_method_raw)
@@ -398,6 +454,15 @@ impl TryFrom<GenericChunk> for HashLookupTable {
 }
 
 impl HashEntry {
+    pub fn new(name: String, output_length: u32) -> Self {
+        Self {
+            id: 0,
+            name,
+            output_length,
+        }
+    }
+
+    /// Serializes the entry to a vector of bytes
     pub fn serialize(&self) -> Vec<u8> {
         let mut serialized: Vec<u8> = Vec::new();
         let mut id_raw = [0u8; 4];
@@ -417,6 +482,19 @@ impl HashEntry {
 }
 
 impl DataEntry {
+    pub fn new(plain: String) -> Self {
+        Self {
+            hashes: HashMap::new(),
+            plain,
+        }
+    }
+
+    /// Adds a hash to the hash values
+    pub fn add_hash_value(&mut self, name: String, value: Vec<u8>) {
+        self.hashes.insert(name, value);
+    }
+
+    /// Serializes the entry to a vector of bytes
     pub fn serialize(&self, lookup_table: HashLookupTable) -> Vec<u8> {
         let mut pw_plain_raw = self.plain.clone().into_bytes();
         let mut pw_length_raw = [0u8; 4];

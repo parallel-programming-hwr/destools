@@ -4,6 +4,7 @@ use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
 use crate::lib::hash::{create_key, sha_checksum, PassKey};
+use crate::lib::rainbowutils::{BDFWriter, DataEntry, HashEntry};
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
@@ -153,6 +154,7 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
     }
 }
 
+const SHA256: &str = "sha256";
 /// Creates a dictionary from an input file and writes it to the output file
 fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
@@ -163,30 +165,36 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     {
         let content = fs::read_to_string(input).expect("Failed to read content");
         let lines = content.par_lines();
-        let mut pb;
-        {
-            pb = ProgressBar::new(lines.clone().count() as u64);
-        }
+        let entry_count = lines.clone().count() as u64;
+        let mut pb = ProgressBar::new(entry_count);
         pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-        let (rx, tx) = sync_channel::<String>(100_000_000);
+        let (rx, tx) = sync_channel::<DataEntry>(100_000_000);
+        let mut bdf_file = BDFWriter::new(writer, entry_count, false);
+        bdf_file.add_lookup_entry(HashEntry::new(SHA256.to_string(), 32));
         handle = thread::spawn(move || {
-            for line in tx {
-                writer.write(&line.as_bytes()).unwrap();
+            for entry in tx {
+                bdf_file.add_data_entry(entry);
                 pb.inc();
             }
             pb.finish();
-            writer.flush().expect("Failed to flush the file writer.");
+            bdf_file.flush();
+            bdf_file
+                .flush_writer()
+                .expect("Failed to flush the file writer.");
         });
         let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
         lines
             .map(|line| -> String { re.replace_all(line, "").to_string() })
-            .map(|pw| -> String {
+            .map(|pw| -> DataEntry {
                 let key = create_key(pw.replace("\t", "").as_ref());
-                let key_base64 = base64::encode(key.as_slice());
-                format!("{}\t{}\n", pw, key_base64)
+                let mut data_entry = DataEntry::new(pw);
+                data_entry.add_hash_value(SHA256.to_string(), key);
+
+                data_entry
             })
-            .for_each_with(rx, |rx, line| {
-                rx.send(line).expect("Failed to send value to channel.");
+            .for_each_with(rx, |rx, data_entry| {
+                rx.send(data_entry)
+                    .expect("Failed to send value to channel.");
             });
     }
     if let Err(_err) = handle.join() {
