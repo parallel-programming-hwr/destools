@@ -139,14 +139,9 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
     let data = fs::read(input).expect("Failed to read input file!");
 
     if let Some(input_checksum) = (args.clone()).input_checksum {
-        tt.take("read-start");
         let bin_content = fs::read(input_checksum).expect("Failed to read checksum file!");
         let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
 
-        println!(
-            "Reading took {:.2}s",
-            tt.since("read-start").unwrap().as_secs_f32()
-        );
         if let Some(dict) = dictionary {
             tt.take("decryption-start");
             if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data, &data_checksum) {
@@ -218,10 +213,9 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
             pb.inc();
         }
         pb.finish();
-        bdf_file.flush().expect("failed to flush the file data");
         bdf_file
-            .flush_writer()
-            .expect("failed to flush the file writer");
+            .finish()
+            .expect("failed to finish the writing process");
     });
 
     tt.take("creation");
@@ -255,6 +249,9 @@ fn spinner(text: &str) -> Spinner {
     Spinner::new(Spinners::Dots2, text.into())
 }
 
+/// Decrypts the file using a bdf dictionary
+/// The files content is read chunk by chunk to reduce the memory impact since dictionary
+/// files tend to be several gigabytes in size
 fn decrypt_with_dictionary_file(
     filename: String,
     data: &Vec<u8>,
@@ -272,7 +269,7 @@ fn decrypt_with_dictionary_file(
         chunk_count = meta.chunk_count;
     }
     let mut pb = ProgressBar::new(chunk_count as u64);
-    let (rx, tx) = sync_channel::<Vec<DataEntry>>(10);
+    let (rx, tx) = sync_channel::<Vec<DataEntry>>(100);
     let _handle = thread::spawn(move || {
         let mut lookup_table = HashLookupTable::new(HashMap::new());
         if let Ok(table) = bdf_file.read_lookup_table() {
