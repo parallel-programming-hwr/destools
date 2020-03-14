@@ -17,7 +17,6 @@ use spinners::{Spinner, Spinners};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::io::{BufReader, BufWriter};
 use std::sync::mpsc::sync_channel;
 use std::thread;
 use std::time::Duration;
@@ -184,7 +183,6 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
     // TODO: Some form of removing duplicates (without itertools)
     let fout = File::create(args.output.clone()).unwrap();
-    let writer = BufWriter::new(fout);
     let handle;
 
     let content = fs::read_to_string(input).expect("Failed to read content");
@@ -196,7 +194,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
     let (rx, tx) = sync_channel::<DataEntry>(100_00_000);
 
-    let mut bdf_file = BDFWriter::new(writer, entry_count, args.compress != 0);
+    let mut bdf_file = BDFWriter::new(fout, entry_count, args.compress != 0);
     bdf_file.set_compression_level(args.compress);
     bdf_file
         .set_entries_per_chunk(args.entries_per_chunk)
@@ -259,8 +257,7 @@ fn decrypt_with_dictionary_file(
 ) -> Option<Vec<u8>> {
     let sp = spinner("Reading dictionary...");
     let f = File::open(&filename).expect("Failed to open dictionary file.");
-    let reader = BufReader::new(f);
-    let mut bdf_file = BDFReader::new(reader);
+    let mut bdf_file = BDFReader::new(f);
     bdf_file
         .read_metadata()
         .expect("failed to read the metadata of the file");
