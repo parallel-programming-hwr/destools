@@ -269,13 +269,12 @@ fn decrypt_with_dictionary_file(
         chunk_count = meta.chunk_count;
     }
     let mut pb = ProgressBar::new(chunk_count as u64);
-    let (rx, tx) = sync_channel::<Vec<DataEntry>>(1000);
+    let (rx, tx) = sync_channel::<Vec<DataEntry>>(100);
     let _handle = thread::spawn(move || {
         let mut lookup_table = HashLookupTable::new(HashMap::new());
         if let Ok(table) = bdf_file.read_lookup_table() {
             lookup_table = table.clone();
         }
-        /// TODO extract data entries in separate threads
         while let Ok(next_chunk) = &mut bdf_file.next_chunk() {
             if let Ok(entries) = next_chunk.data_entries(&lookup_table) {
                 if let Err(_) = rx.send(entries) {}
