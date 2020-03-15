@@ -183,7 +183,6 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
     // TODO: Some form of removing duplicates (without itertools)
     let fout = File::create(args.output.clone()).unwrap();
-    let handle;
 
     let content = fs::read_to_string(input).expect("Failed to read content");
     let lines = content.par_lines();
@@ -203,9 +202,9 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
         .expect("Failed to add sha256 lookup entry");
 
-    handle = thread::spawn(move || {
+    let handle = thread::spawn(move || {
         for entry in tx {
-            if let Err(e) = bdf_file.add_data_entry(entry) {
+            if let Err(e) = &bdf_file.add_data_entry(entry) {
                 println!("{:?}", e);
             }
             pb.inc();
