@@ -16,7 +16,6 @@ use spinners::{Spinner, Spinners};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -237,26 +236,37 @@ fn decrypt_with_dictionary_file(filename: String, data: &Vec<u8>) -> Option<Vec<
     let sp = spinner("Reading dictionary...");
     let f = File::open(&filename).expect("Failed to open dictionary file.");
     let mut bdf_file = BDFReader::new(f);
-    bdf_file
-        .read_metadata()
-        .expect("failed to read the metadata of the file");
+    bdf_file.read_start().expect("failed to read the bdf file");
     let mut chunk_count = 0;
     if let Some(meta) = &bdf_file.metadata {
         chunk_count = meta.chunk_count;
     }
     let mut pb = ProgressBar::new(chunk_count as u64);
-    let (rx, tx) = sync_channel::<Vec<DataEntry>>(100);
-    let _handle = thread::spawn(move || {
-        let mut lookup_table = HashLookupTable::new(HashMap::new());
-        if let Ok(table) = bdf_file.read_lookup_table() {
-            lookup_table = table.clone();
-        }
-        while let Ok(next_chunk) = &mut bdf_file.next_chunk() {
-            if let Ok(entries) = next_chunk.data_entries(&lookup_table) {
-                if let Err(_) = rx.send(entries) {}
+    let bdf_arc = Arc::new(Mutex::new(bdf_file));
+    let mut threads = Vec::new();
+    let (rx, tx) = bounded::<Vec<DataEntry>>(100);
+
+    for _ in 0..(num_cpus::get() as f32 / 4f32).ceil() as usize {
+        let rx = rx.clone();
+        let bdf_arc = Arc::clone(&bdf_arc);
+
+        threads.push(thread::spawn(move || {
+            let mut lookup_table = HashLookupTable::new(HashMap::new());
+            if let Some(table) = &bdf_arc.lock().unwrap().lookup_table {
+                lookup_table = table.clone();
             }
-        }
-    });
+            while let Ok(next_chunk) = &mut bdf_arc
+                .lock()
+                .expect("failed to lock bdf_arc to read next chunk")
+                .next_chunk()
+            {
+                if let Ok(entries) = next_chunk.data_entries(&lookup_table) {
+                    if let Err(_) = rx.send(entries) {}
+                }
+            }
+        }));
+    }
+    drop(rx);
     sp.stop();
     let mut result_data: Option<Vec<u8>> = None;
     for entries in tx {
