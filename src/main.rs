@@ -5,6 +5,7 @@ use crate::lib::hash::{create_hmac, sha256};
 use crate::lib::timing::TimeTaker;
 use bdf::chunks::{DataEntry, HashEntry, HashLookupTable};
 use bdf::io::{BDFReader, BDFWriter};
+use crossbeam_channel::bounded;
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
@@ -16,6 +17,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -160,7 +162,6 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
 
     let mut pb = ProgressBar::new(entry_count);
     pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-    let (rx, tx) = sync_channel::<DataEntry>(100_00_000);
 
     let mut bdf_file = BDFWriter::new(fout, entry_count, args.compress != 0);
     bdf_file.set_compression_level(args.compress);
@@ -171,18 +172,24 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
         .expect("Failed to add sha256 lookup entry");
 
-    let handle = thread::spawn(move || {
-        for entry in tx {
-            if let Err(e) = &bdf_file.add_data_entry(entry) {
-                println!("{:?}", e);
+    let mut threads = Vec::new();
+    let (rx, tx) = bounded::<DataEntry>(100_00_000);
+    let bdf_arc = Arc::new(Mutex::new(bdf_file));
+    let pb_arc = Arc::new(Mutex::new(pb));
+
+    for _ in 0..(num_cpus::get() as f32 / 4f32).ceil() as usize {
+        let tx = tx.clone();
+        let bdf_arc = Arc::clone(&bdf_arc);
+        let pb_arc = Arc::clone(&pb_arc);
+        threads.push(thread::spawn(move || {
+            for entry in tx {
+                if let Err(e) = &bdf_arc.lock().unwrap().add_data_entry(entry) {
+                    println!("{:?}", e);
+                }
+                pb_arc.lock().unwrap().inc();
             }
-            pb.inc();
-        }
-        pb.finish();
-        bdf_file
-            .finish()
-            .expect("failed to finish the writing process");
-    });
+        }));
+    }
 
     tt.take("creation");
     let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
@@ -200,9 +207,17 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
                 .expect("Failed to send value to channel.");
         });
 
-    if let Err(_err) = handle.join() {
-        println!("Failed to join!");
+    for handle in threads {
+        if let Err(_err) = handle.join() {
+            println!("Failed to join!");
+        }
     }
+    bdf_arc
+        .lock()
+        .unwrap()
+        .finish()
+        .expect("failed to finish the writing process");
+    pb_arc.lock().unwrap().finish();
     println!(
         "Rainbow table creation took {:.2}s",
         tt.since("creation").unwrap().as_secs_f32()
