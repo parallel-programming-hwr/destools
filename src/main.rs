@@ -1,9 +1,7 @@
 pub mod lib;
 
-use crate::lib::crypt::{
-    decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
-};
-use crate::lib::hash::{create_key, sha256, sha_checksum};
+use crate::lib::crypt::{decrypt_with_dictionary, encrypt_data};
+use crate::lib::hash::{create_hmac, sha256};
 use crate::lib::timing::TimeTaker;
 use bdf::chunks::{DataEntry, HashEntry, HashLookupTable};
 use bdf::io::{BDFReader, BDFWriter};
@@ -53,10 +51,6 @@ struct Encrypt {
     /// The output file
     #[structopt(short = "o", long = "output", default_value = "output.des")]
     output: String,
-
-    /// The file for the checksum.
-    #[structopt(long = "checksum-file")]
-    output_checksum: Option<String>,
 }
 
 #[derive(StructOpt, Clone)]
@@ -68,10 +62,6 @@ struct Decrypt {
     /// The output file
     #[structopt(short = "o", long = "output", default_value = "output.txt")]
     output: String,
-
-    /// The file for the checksum.
-    #[structopt(long = "checksum-file")]
-    input_checksum: Option<String>,
 
     /// A dictionary file containing a list of passwords
     /// The file needs to be in a csv format with calculated password hashes.
@@ -115,15 +105,12 @@ fn encrypt(_opts: &Opts, args: &Encrypt) {
     let output: String = (*args.output).parse().unwrap();
     let data: Vec<u8> = fs::read(input).expect("Failed to read input file!");
 
-    if let Some(output_checksum) = (args.clone()).output_checksum {
-        let checksum = sha_checksum(&data);
-        let checksum_b64 = base64::encode(checksum.as_slice());
-        fs::write(output_checksum, checksum_b64.as_bytes())
-            .expect("Failed to write checksum file!");
-    }
     let pass = read_password_from_tty(Some("Password: ")).unwrap();
-    let key = create_key(&pass);
-    let enc_data = encrypt_data(data.as_slice(), key.as_slice());
+    let sha256_key = sha256(&pass);
+    let key = &sha256_key[0..8];
+    let mut data_hmac = create_hmac(&sha256_key, &data).expect("failed to create hmac");
+    let mut enc_data = encrypt_data(data.as_slice(), &key);
+    enc_data.append(&mut data_hmac);
     fs::write(output, enc_data.as_slice()).expect("Failed to write output file!");
 }
 
@@ -137,39 +124,21 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
     let dictionary = args.dictionary.clone();
     let data = fs::read(input).expect("Failed to read input file!");
 
-    if let Some(input_checksum) = (args.clone()).input_checksum {
-        let bin_content = fs::read(input_checksum).expect("Failed to read checksum file!");
-        let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
-
-        if let Some(dict) = dictionary {
-            tt.take("decryption-start");
-            if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data, &data_checksum) {
-                fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!(
-                    "Decryption took {:.2}s",
-                    tt.since("decryption-start").unwrap().as_secs_f32()
-                );
-                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
-            } else {
-                println!("\nNo password found!");
-                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
-            }
+    if let Some(dict) = dictionary {
+        tt.take("decryption-start");
+        if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data) {
+            fs::write(output, &dec_data).expect("Failed to write output file!");
+            println!(
+                "Decryption took {:.2}s",
+                tt.since("decryption-start").unwrap().as_secs_f32()
+            );
+            println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
         } else {
-            let sp = spinner("Brute force decrypting file");
-            if let Some(dec_data) = decrypt_brute_brute_force(&data, &data_checksum) {
-                sp.stop();
-                fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
-            } else {
-                sp.stop();
-                println!("\nNo fitting key found. (This should have been impossible)")
-            }
+            println!("\nNo password found!");
+            println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
         }
     } else {
-        let pass = read_password_from_tty(Some("Password: ")).unwrap();
-        let key = create_key(&pass);
-        let result = decrypt_data(&data, key.as_slice());
-        fs::write(output, &result).expect("Failed to write output file!");
+        println!("No checksum file given!");
     }
 }
 
@@ -249,11 +218,7 @@ fn spinner(text: &str) -> Spinner {
 /// Decrypts the file using a bdf dictionary
 /// The files content is read chunk by chunk to reduce the memory impact since dictionary
 /// files tend to be several gigabytes in size
-fn decrypt_with_dictionary_file(
-    filename: String,
-    data: &Vec<u8>,
-    data_checksum: &Vec<u8>,
-) -> Option<Vec<u8>> {
+fn decrypt_with_dictionary_file(filename: String, data: &Vec<u8>) -> Option<Vec<u8>> {
     let sp = spinner("Reading dictionary...");
     let f = File::open(&filename).expect("Failed to open dictionary file.");
     let mut bdf_file = BDFReader::new(f);
@@ -280,17 +245,17 @@ fn decrypt_with_dictionary_file(
     sp.stop();
     let mut result_data: Option<Vec<u8>> = None;
     for entries in tx {
-        let pw_table: Vec<(&String, Vec<u8>)> = entries
+        let pw_table: Vec<(&String, &Vec<u8>)> = entries
             .par_iter()
             .map(|entry: &DataEntry| {
                 let pw = &entry.plain;
                 let key: &Vec<u8> = entry.get_hash_value(SHA256.to_string()).unwrap();
 
-                (pw, key[0..8].to_vec())
+                (pw, key)
             })
             .collect();
         pb.inc();
-        if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
+        if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table) {
             result_data = Some(dec_data);
             break;
         }
