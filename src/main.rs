@@ -176,7 +176,7 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let bdf_arc = Arc::new(Mutex::new(bdf_file));
     let pb_arc = Arc::new(Mutex::new(pb));
 
-    for _ in 0..(num_cpus::get() as f32 / 4f32).ceil() as usize {
+    for _ in 0..(num_cpus::get() as f32 / 4f32).max(1f32) as usize {
         let tx = tx.clone();
         let bdf_arc = Arc::clone(&bdf_arc);
         let pb_arc = Arc::clone(&pb_arc);
@@ -246,7 +246,7 @@ fn decrypt_with_dictionary_file(filename: String, data: &Vec<u8>) -> Option<Vec<
     let mut threads = Vec::new();
     let (rx, tx) = bounded::<Vec<DataEntry>>(100);
 
-    for _ in 0..(num_cpus::get() as f32 / 4f32).ceil() as usize {
+    for _ in 0..(num_cpus::get() as f32 / 4f32).max(1f32) as usize {
         let rx = rx.clone();
         let bdf_arc = Arc::clone(&bdf_arc);
 
