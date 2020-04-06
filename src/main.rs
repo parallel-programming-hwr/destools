@@ -3,10 +3,11 @@ pub mod lib;
 use crate::lib::crypt::{
     decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
 };
-use crate::lib::hash::{create_key, sha256, sha_checksum};
+use crate::lib::hash::{create_key, sha256, sha512, sha_checksum};
 use crate::lib::timing::TimeTaker;
 use bdf::chunks::{DataEntry, HashEntry, HashLookupTable};
 use bdf::io::{BDFReader, BDFWriter};
+use benchlib::benching::Bencher;
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
@@ -42,6 +43,10 @@ enum SubCommand {
     /// Create a dictionary rainbow-table from a txt file
     #[structopt(name = "create-dictionary")]
     CreateDictionary(CreateDictionary),
+
+    /// Runs some benchmarks
+    #[structopt(name = "benchmark")]
+    Benchmark,
 }
 
 #[derive(StructOpt, Clone)]
@@ -106,6 +111,7 @@ fn main() {
         SubCommand::Encrypt(args) => encrypt(&opts, &args),
         SubCommand::Decrypt(args) => decrypt(&opts, &args),
         SubCommand::CreateDictionary(args) => create_dictionary(&opts, &args),
+        SubCommand::Benchmark => benchmark(),
     }
 }
 
@@ -298,4 +304,20 @@ fn decrypt_with_dictionary_file(
     }
     pb.finish();
     result_data
+}
+
+fn benchmark() {
+    let mut bencher = Bencher::new();
+    let mut test_key = Vec::new();
+    let mut encrypted = Vec::new();
+    bencher
+        .set_iterations(1_000_000)
+        .print_settings()
+        .bench("sha256", || test_key = sha256("abcdefghijklmnopqrstuvwxyz"))
+        .bench("sha512", || sha512("abcdefghijklmnopqrstuvwxyz"))
+        .compare()
+        .bench("des encrypt", || {
+            encrypted = encrypt_data(b"abcdefghijklmnopqrstuvwxyz", &test_key[..8])
+        })
+        .bench("des decrypt", || decrypt_data(&encrypted, &test_key[..8]));
 }
