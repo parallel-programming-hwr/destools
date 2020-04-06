@@ -1,4 +1,4 @@
-use crate::lib::hash::sha_checksum;
+use crate::lib::hash::create_hmac;
 use cfb_mode::stream_cipher::{NewStreamCipher, StreamCipher};
 use cfb_mode::Cfb;
 use des::Des;
@@ -31,16 +31,14 @@ pub fn decrypt_data(data: &[u8], key: &[u8]) -> Vec<u8> {
 }
 
 /// Decrypts data using a dictionary
-pub fn decrypt_with_dictionary(
-    data: &[u8],
-    dict: Vec<(&String, Vec<u8>)>,
-    checksum: &[u8],
-) -> Option<Vec<u8>> {
+pub fn decrypt_with_dictionary(data: &[u8], dict: Vec<(&String, &Vec<u8>)>) -> Option<Vec<u8>> {
     let decrypted = Mutex::<Option<Vec<u8>>>::new(None);
+    let hmac = &data[data.len() - 32..];
+    let encrypted_data = &data[..data.len() - 32];
     let pass = dict.par_iter().find_first(|(_pw, key)| {
-        let decrypted_data = decrypt_data(&data, key);
-        let decr_check = sha_checksum(&decrypted_data);
-        return if decr_check == checksum {
+        let decrypted_data = decrypt_data(encrypted_data, &key[0..8]);
+        let decr_hmac = create_hmac(&key, &decrypted_data).expect("failed to create hmac");
+        return if decr_hmac == hmac {
             let mut decry = decrypted.lock().unwrap();
             *decry = Some(decrypted_data);
             true
@@ -54,26 +52,6 @@ pub fn decrypt_with_dictionary(
         if let Some(decrypted_data) = (*decry).clone() {
             return Some(decrypted_data);
         }
-    }
-    None
-}
-
-/// Decrypts data by generating all possible keys
-pub fn decrypt_brute_brute_force(data: &[u8], checksum: &[u8]) -> Option<Vec<u8>> {
-    let encryption_key = (0u64..std::u64::MAX)
-        .into_par_iter()
-        .find_first(|num: &u64| {
-            let key: &[u8] = &num.to_le_bytes();
-            let decrypted_data = decrypt_data(&data, key);
-            let decr_check = sha_checksum(&decrypted_data);
-
-            decr_check == checksum
-        });
-    if let Some(num) = encryption_key {
-        let key: &[u8] = &num.to_le_bytes();
-        println!("Key found: {:?}", key);
-
-        return Some(decrypt_data(data, key));
     }
     None
 }

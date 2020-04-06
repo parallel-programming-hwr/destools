@@ -1,13 +1,12 @@
 pub mod lib;
 
-use crate::lib::crypt::{
-    decrypt_brute_brute_force, decrypt_data, decrypt_with_dictionary, encrypt_data,
-};
-use crate::lib::hash::{create_key, sha256, sha512, sha_checksum};
+use crate::lib::crypt::{decrypt_data, decrypt_with_dictionary, encrypt_data};
+use crate::lib::hash::{create_hmac, sha256};
 use crate::lib::timing::TimeTaker;
 use bdf::chunks::{DataEntry, HashEntry, HashLookupTable};
 use bdf::io::{BDFReader, BDFWriter};
 use benchlib::benching::Bencher;
+use crossbeam_channel::bounded;
 use pbr::ProgressBar;
 use rayon::prelude::*;
 use rayon::str;
@@ -18,7 +17,7 @@ use spinners::{Spinner, Spinners};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -58,10 +57,6 @@ struct Encrypt {
     /// The output file
     #[structopt(short = "o", long = "output", default_value = "output.des")]
     output: String,
-
-    /// The file for the checksum.
-    #[structopt(long = "checksum-file")]
-    output_checksum: Option<String>,
 }
 
 #[derive(StructOpt, Clone)]
@@ -73,10 +68,6 @@ struct Decrypt {
     /// The output file
     #[structopt(short = "o", long = "output", default_value = "output.txt")]
     output: String,
-
-    /// The file for the checksum.
-    #[structopt(long = "checksum-file")]
-    input_checksum: Option<String>,
 
     /// A dictionary file containing a list of passwords
     /// The file needs to be in a csv format with calculated password hashes.
@@ -121,15 +112,12 @@ fn encrypt(_opts: &Opts, args: &Encrypt) {
     let output: String = (*args.output).parse().unwrap();
     let data: Vec<u8> = fs::read(input).expect("Failed to read input file!");
 
-    if let Some(output_checksum) = (args.clone()).output_checksum {
-        let checksum = sha_checksum(&data);
-        let checksum_b64 = base64::encode(checksum.as_slice());
-        fs::write(output_checksum, checksum_b64.as_bytes())
-            .expect("Failed to write checksum file!");
-    }
     let pass = read_password_from_tty(Some("Password: ")).unwrap();
-    let key = create_key(&pass);
-    let enc_data = encrypt_data(data.as_slice(), key.as_slice());
+    let sha256_key = sha256(&pass);
+    let key = &sha256_key[0..8];
+    let mut data_hmac = create_hmac(&sha256_key, &data).expect("failed to create hmac");
+    let mut enc_data = encrypt_data(data.as_slice(), &key);
+    enc_data.append(&mut data_hmac);
     fs::write(output, enc_data.as_slice()).expect("Failed to write output file!");
 }
 
@@ -143,39 +131,21 @@ fn decrypt(_opts: &Opts, args: &Decrypt) {
     let dictionary = args.dictionary.clone();
     let data = fs::read(input).expect("Failed to read input file!");
 
-    if let Some(input_checksum) = (args.clone()).input_checksum {
-        let bin_content = fs::read(input_checksum).expect("Failed to read checksum file!");
-        let data_checksum = base64::decode(bin_content.as_slice()).unwrap();
-
-        if let Some(dict) = dictionary {
-            tt.take("decryption-start");
-            if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data, &data_checksum) {
-                fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!(
-                    "Decryption took {:.2}s",
-                    tt.since("decryption-start").unwrap().as_secs_f32()
-                );
-                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
-            } else {
-                println!("\nNo password found!");
-                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
-            }
+    if let Some(dict) = dictionary {
+        tt.take("decryption-start");
+        if let Some(dec_data) = decrypt_with_dictionary_file(dict, &data) {
+            fs::write(output, &dec_data).expect("Failed to write output file!");
+            println!(
+                "Decryption took {:.2}s",
+                tt.since("decryption-start").unwrap().as_secs_f32()
+            );
+            println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
         } else {
-            let sp = spinner("Brute force decrypting file");
-            if let Some(dec_data) = decrypt_brute_brute_force(&data, &data_checksum) {
-                sp.stop();
-                fs::write(output, &dec_data).expect("Failed to write output file!");
-                println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
-            } else {
-                sp.stop();
-                println!("\nNo fitting key found. (This should have been impossible)")
-            }
+            println!("\nNo password found!");
+            println!("Finished {:.2}s!", tt.since("start").unwrap().as_secs_f32());
         }
     } else {
-        let pass = read_password_from_tty(Some("Password: ")).unwrap();
-        let key = create_key(&pass);
-        let result = decrypt_data(&data, key.as_slice());
-        fs::write(output, &result).expect("Failed to write output file!");
+        println!("No checksum file given!");
     }
 }
 
@@ -189,7 +159,6 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
     let input: String = (*args.input).parse().unwrap();
     // TODO: Some form of removing duplicates (without itertools)
     let fout = File::create(args.output.clone()).unwrap();
-    let handle;
 
     let content = fs::read_to_string(input).expect("Failed to read content");
     let lines = content.par_lines();
@@ -198,7 +167,6 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
 
     let mut pb = ProgressBar::new(entry_count);
     pb.set_max_refresh_rate(Some(Duration::from_millis(200)));
-    let (rx, tx) = sync_channel::<DataEntry>(100_00_000);
 
     let mut bdf_file = BDFWriter::new(fout, entry_count, args.compress != 0);
     bdf_file.set_compression_level(args.compress);
@@ -209,18 +177,24 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
         .add_lookup_entry(HashEntry::new(SHA256.to_string(), 32))
         .expect("Failed to add sha256 lookup entry");
 
-    handle = thread::spawn(move || {
-        for entry in tx {
-            if let Err(e) = bdf_file.add_data_entry(entry) {
-                println!("{:?}", e);
+    let mut threads = Vec::new();
+    let (rx, tx) = bounded::<DataEntry>(100_00_000);
+    let bdf_arc = Arc::new(Mutex::new(bdf_file));
+    let pb_arc = Arc::new(Mutex::new(pb));
+
+    for _ in 0..(num_cpus::get() as f32 / 4f32).max(1f32) as usize {
+        let tx = tx.clone();
+        let bdf_arc = Arc::clone(&bdf_arc);
+        let pb_arc = Arc::clone(&pb_arc);
+        threads.push(thread::spawn(move || {
+            for entry in tx {
+                if let Err(e) = &bdf_arc.lock().unwrap().add_data_entry(entry) {
+                    println!("{:?}", e);
+                }
+                pb_arc.lock().unwrap().inc();
             }
-            pb.inc();
-        }
-        pb.finish();
-        bdf_file
-            .finish()
-            .expect("failed to finish the writing process");
-    });
+        }));
+    }
 
     tt.take("creation");
     let re = Regex::new("[\\x00\\x08\\x0B\\x0C\\x0E-\\x1F\\t\\r\\a\\n]").unwrap();
@@ -238,9 +212,17 @@ fn create_dictionary(_opts: &Opts, args: &CreateDictionary) {
                 .expect("Failed to send value to channel.");
         });
 
-    if let Err(_err) = handle.join() {
-        println!("Failed to join!");
+    for handle in threads {
+        if let Err(_err) = handle.join() {
+            println!("Failed to join!");
+        }
     }
+    bdf_arc
+        .lock()
+        .unwrap()
+        .finish()
+        .expect("failed to finish the writing process");
+    pb_arc.lock().unwrap().finish();
     println!(
         "Rainbow table creation took {:.2}s",
         tt.since("creation").unwrap().as_secs_f32()
@@ -256,48 +238,55 @@ fn spinner(text: &str) -> Spinner {
 /// Decrypts the file using a bdf dictionary
 /// The files content is read chunk by chunk to reduce the memory impact since dictionary
 /// files tend to be several gigabytes in size
-fn decrypt_with_dictionary_file(
-    filename: String,
-    data: &Vec<u8>,
-    data_checksum: &Vec<u8>,
-) -> Option<Vec<u8>> {
+fn decrypt_with_dictionary_file(filename: String, data: &Vec<u8>) -> Option<Vec<u8>> {
     let sp = spinner("Reading dictionary...");
     let f = File::open(&filename).expect("Failed to open dictionary file.");
     let mut bdf_file = BDFReader::new(f);
-    bdf_file
-        .read_metadata()
-        .expect("failed to read the metadata of the file");
+    bdf_file.read_start().expect("failed to read the bdf file");
     let mut chunk_count = 0;
     if let Some(meta) = &bdf_file.metadata {
         chunk_count = meta.chunk_count;
     }
     let mut pb = ProgressBar::new(chunk_count as u64);
-    let (rx, tx) = sync_channel::<Vec<DataEntry>>(100);
-    let _handle = thread::spawn(move || {
-        let mut lookup_table = HashLookupTable::new(HashMap::new());
-        if let Ok(table) = bdf_file.read_lookup_table() {
-            lookup_table = table.clone();
-        }
-        while let Ok(next_chunk) = &mut bdf_file.next_chunk() {
-            if let Ok(entries) = next_chunk.data_entries(&lookup_table) {
-                if let Err(_) = rx.send(entries) {}
+    let bdf_arc = Arc::new(Mutex::new(bdf_file));
+    let mut threads = Vec::new();
+    let (rx, tx) = bounded::<Vec<DataEntry>>(100);
+
+    for _ in 0..(num_cpus::get() as f32 / 4f32).max(1f32) as usize {
+        let rx = rx.clone();
+        let bdf_arc = Arc::clone(&bdf_arc);
+
+        threads.push(thread::spawn(move || {
+            let mut lookup_table = HashLookupTable::new(HashMap::new());
+            if let Some(table) = &bdf_arc.lock().unwrap().lookup_table {
+                lookup_table = table.clone();
             }
-        }
-    });
+            while let Ok(next_chunk) = &mut bdf_arc
+                .lock()
+                .expect("failed to lock bdf_arc to read next chunk")
+                .next_chunk()
+            {
+                if let Ok(entries) = next_chunk.data_entries(&lookup_table) {
+                    if let Err(_) = rx.send(entries) {}
+                }
+            }
+        }));
+    }
+    drop(rx);
     sp.stop();
     let mut result_data: Option<Vec<u8>> = None;
     for entries in tx {
-        let pw_table: Vec<(&String, Vec<u8>)> = entries
+        let pw_table: Vec<(&String, &Vec<u8>)> = entries
             .par_iter()
             .map(|entry: &DataEntry| {
                 let pw = &entry.plain;
                 let key: &Vec<u8> = entry.get_hash_value(SHA256.to_string()).unwrap();
 
-                (pw, key[0..8].to_vec())
+                (pw, key)
             })
             .collect();
         pb.inc();
-        if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table, &data_checksum) {
+        if let Some(dec_data) = decrypt_with_dictionary(&data, pw_table) {
             result_data = Some(dec_data);
             break;
         }
@@ -314,8 +303,6 @@ fn benchmark() {
         .set_iterations(1_000_000)
         .print_settings()
         .bench("sha256", || test_key = sha256("abcdefghijklmnopqrstuvwxyz"))
-        .bench("sha512", || sha512("abcdefghijklmnopqrstuvwxyz"))
-        .compare()
         .bench("des encrypt", || {
             encrypted = encrypt_data(b"abcdefghijklmnopqrstuvwxyz", &test_key[..8])
         })
